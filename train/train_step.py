@@ -33,6 +33,31 @@ def train_step_ae(
     return state, metrics
 
 
+def _make_train_step_lattice_invariant(weight: float):
+    """Create a JIT-compiled lattice AE training step with invariance loss."""
+
+    @jax.jit
+    def train_step_lattice_invariant(
+        state: TrainState,
+        batch: jnp.ndarray,
+        paired_batch: jnp.ndarray,
+    ) -> tuple[TrainState, dict[str, jnp.ndarray]]:
+        def loss_fn(params):
+            x_hat, z = state.apply_fn({'params': params}, batch)
+            _, z_pair = state.apply_fn({'params': params}, paired_batch)
+            mse = jnp.mean((batch - x_hat) ** 2)
+            inv_loss = jnp.mean(jnp.sum((z - z_pair) ** 2, axis=-1))
+            loss = mse + weight * inv_loss
+            return loss, {'loss': loss, 'mse': mse, 'inv_loss': inv_loss}
+
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        (_, metrics), grads = grad_fn(state.params)
+        state = state.apply_gradients(grads=grads)
+        return state, metrics
+
+    return train_step_lattice_invariant
+
+
 def _make_train_step_vae(beta: float):
     """Create a JIT-compiled VAE training step with fixed beta."""
 
@@ -68,6 +93,25 @@ def _make_train_step_vae(beta: float):
         return state, metrics
 
     return train_step_vae
+
+
+def _make_eval_step_lattice_invariant(weight: float):
+    """Create a JIT-compiled lattice AE eval step with invariance loss."""
+
+    @jax.jit
+    def eval_step_lattice_invariant(
+        state: TrainState,
+        batch: jnp.ndarray,
+        paired_batch: jnp.ndarray,
+    ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
+        x_hat, z = state.apply_fn({'params': state.params}, batch)
+        _, z_pair = state.apply_fn({'params': state.params}, paired_batch)
+        mse = jnp.mean((batch - x_hat) ** 2)
+        inv_loss = jnp.mean(jnp.sum((z - z_pair) ** 2, axis=-1))
+        loss = mse + weight * inv_loss
+        return {'mse': mse, 'loss': loss, 'inv_loss': inv_loss}, z
+
+    return eval_step_lattice_invariant
 
 
 @jax.jit

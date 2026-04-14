@@ -8,6 +8,9 @@ import numpy as np
 import ml_collections
 
 
+_MODULAR_TRANSFORMS = ('T', 'S', 'ST')
+
+
 def generate_t1_signals(
     thetas: jnp.ndarray,
     omega: float,
@@ -87,6 +90,32 @@ def generate_t2_signals(
 # ---------------------------------------------------------------------------
 # Lattice / Modular data generation
 # ---------------------------------------------------------------------------
+
+def normalize_lattice_signals(
+    signals: jnp.ndarray,
+    method: str = 'none',
+    eps: float = 1e-8,
+) -> jnp.ndarray:
+    """Normalize lattice signals sample-wise.
+
+    Args:
+        signals: Signal array of shape (N, T).
+        method: Either 'none' or 'max'.
+        eps: Small value to avoid division by zero.
+
+    Returns:
+        Normalized signals with the same shape as the input.
+    """
+    if method == 'none':
+        return signals
+    if method != 'max':
+        raise ValueError(
+            f"Unknown lattice normalization '{method}'. Choose from 'none', 'max'."
+        )
+
+    row_max = jnp.max(signals, axis=1, keepdims=True)
+    return signals / jnp.maximum(row_max, eps)
+
 
 def sample_fundamental_domain(
     n_samples: int,
@@ -198,6 +227,53 @@ def reduce_to_fundamental_domain(tau: np.ndarray) -> np.ndarray:
         result[i] = t
 
     return result.reshape(tau.shape)
+
+
+def apply_modular_transform(
+    tau: np.ndarray | complex,
+    transform: str,
+) -> np.ndarray:
+    """Apply a basic SL₂(Z) generator composition to τ in the upper half-plane."""
+    tau_arr = np.asarray(tau, dtype=complex)
+
+    if transform == 'T':
+        transformed = tau_arr + 1.0
+    elif transform == 'S':
+        transformed = -1.0 / tau_arr
+    elif transform == 'ST':
+        transformed = -1.0 / (tau_arr + 1.0)
+    else:
+        raise ValueError(
+            f"Unknown modular transform '{transform}'. Choose from {_MODULAR_TRANSFORMS}."
+        )
+
+    return transformed
+
+
+def make_cyclic_modular_partners(
+    tau: np.ndarray | complex,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create cyclic T/S/ST modular partners for a batch of τ values.
+
+    The transform assignment follows the fixed pattern [T, S, ST, T, S, ST, ...].
+
+    Args:
+        tau: Complex array of τ values, shape (N,) or scalar.
+
+    Returns:
+        Tuple of (transformed_tau, transform_names).
+    """
+    tau_arr = np.asarray(tau, dtype=complex).reshape(-1)
+    transform_ids = np.arange(len(tau_arr)) % len(_MODULAR_TRANSFORMS)
+    transformed = tau_arr.copy()
+
+    for idx, name in enumerate(_MODULAR_TRANSFORMS):
+        mask = transform_ids == idx
+        if np.any(mask):
+            transformed[mask] = apply_modular_transform(tau_arr[mask], name)
+
+    transform_names = np.array([_MODULAR_TRANSFORMS[i] for i in transform_ids])
+    return transformed.reshape(np.asarray(tau).shape), transform_names
 
 
 def generate_lattice_theta(
@@ -405,6 +481,7 @@ def _generate_lattice_dataset(
     t_max = getattr(config.data, 'lattice_t_max', 5.0)
     signal_length = config.data.signal_length
     noise_std = getattr(config.data, 'noise_std', 0.0)
+    normalization = getattr(config.data, 'lattice_signal_normalization', 'none')
 
     key, sample_key = jax.random.split(key)
 
@@ -423,6 +500,7 @@ def _generate_lattice_dataset(
         tau, signal_length, t_min=t_min, t_max=t_max, K=K,
         noise_std=noise_std, key=noise_key,
     )
+    signals = normalize_lattice_signals(signals, method=normalization)
 
     # Compute j-invariant for post-hoc analysis
     j_vals = compute_j_invariant(tau)

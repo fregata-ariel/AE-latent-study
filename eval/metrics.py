@@ -2,7 +2,9 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax.training.train_state import TrainState
+from sklearn.feature_selection import mutual_info_regression
 
 from data.dataset import Dataset, batched_iterator
 
@@ -192,9 +194,9 @@ def check_modular_invariance(
     Returns:
         Dictionary with 'mean_latent_distance' and 'max_latent_distance'.
     """
-    import numpy as np
     from data.generation import (
         sample_fundamental_domain, generate_lattice_theta,
+        make_cyclic_modular_partners, normalize_lattice_signals,
     )
 
     key = jax.random.PRNGKey(42)
@@ -202,21 +204,12 @@ def check_modular_invariance(
     t_min = getattr(config.data, 'lattice_t_min', 0.5)
     t_max = getattr(config.data, 'lattice_t_max', 5.0)
     signal_length = config.data.signal_length
+    y_max = getattr(config.data, 'lattice_y_max', 3.0)
+    normalization = getattr(config.data, 'lattice_signal_normalization', 'none')
 
     # Sample τ from F
-    tau_orig = sample_fundamental_domain(n_pairs, y_max=3.0, key=key)
-
-    # Apply SL₂(Z) transformations: mix of T(τ→τ+1) and S(τ→-1/τ)
-    tau_transformed = np.empty_like(tau_orig)
-    for i in range(n_pairs):
-        t = tau_orig[i]
-        # Apply T
-        if i % 3 == 0:
-            tau_transformed[i] = t + 1.0  # T
-        elif i % 3 == 1:
-            tau_transformed[i] = -1.0 / t  # S
-        else:
-            tau_transformed[i] = -1.0 / (t + 1.0)  # S∘T
+    tau_orig = sample_fundamental_domain(n_pairs, y_max=y_max, key=key)
+    tau_transformed, _ = make_cyclic_modular_partners(tau_orig)
 
     # Generate signals for both
     sig_orig = generate_lattice_theta(
@@ -225,6 +218,8 @@ def check_modular_invariance(
     sig_trans = generate_lattice_theta(
         tau_transformed, signal_length, t_min=t_min, t_max=t_max, K=K,
     )
+    sig_orig = normalize_lattice_signals(sig_orig, method=normalization)
+    sig_trans = normalize_lattice_signals(sig_trans, method=normalization)
 
     # Encode both
     if is_vae:
@@ -247,6 +242,59 @@ def check_modular_invariance(
     }
 
 
+def _pearson_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    """Return a finite Pearson correlation with a constant-input guard."""
+    x_arr = np.asarray(x, dtype=float)
+    y_arr = np.asarray(y, dtype=float)
+
+    if x_arr.size == 0 or y_arr.size == 0:
+        return 0.0
+    if np.allclose(x_arr, x_arr[0]) or np.allclose(y_arr, y_arr[0]):
+        return 0.0
+
+    corr = np.corrcoef(x_arr, y_arr)[0, 1]
+    return float(corr) if np.isfinite(corr) else 0.0
+
+
+def _rankdata(values: np.ndarray) -> np.ndarray:
+    """Rank values with average tie handling."""
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return values
+
+    order = np.argsort(values, kind='mergesort')
+    sorted_values = values[order]
+    ranks = np.empty(values.shape[0], dtype=float)
+
+    start = 0
+    while start < len(sorted_values):
+        end = start + 1
+        while end < len(sorted_values) and sorted_values[end] == sorted_values[start]:
+            end += 1
+        avg_rank = 0.5 * (start + end - 1)
+        ranks[order[start:end]] = avg_rank
+        start = end
+
+    return ranks
+
+
+def _spearman_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    """Return a finite Spearman rank correlation."""
+    return _pearson_correlation(_rankdata(x), _rankdata(y))
+
+
+def _mutual_information(x: np.ndarray, y: np.ndarray) -> float:
+    """Estimate mutual information for a single latent dimension vs a target."""
+    x_arr = np.asarray(x, dtype=float).reshape(-1, 1)
+    y_arr = np.asarray(y, dtype=float)
+
+    if x_arr.shape[0] == 0 or np.allclose(x_arr, x_arr[0]) or np.allclose(y_arr, y_arr[0]):
+        return 0.0
+
+    mi = mutual_info_regression(x_arr, y_arr, random_state=42)
+    return float(mi[0]) if len(mi) else 0.0
+
+
 def compute_j_correlation(
     z_latent: jnp.ndarray,
     j_values,
@@ -261,24 +309,41 @@ def compute_j_correlation(
         Dictionary with correlation coefficients for each latent dim vs
         Re(j) and Im(j).
     """
-    import numpy as np
-
     z_np = np.array(z_latent)
     j_arr = np.array(j_values)
     j_real = j_arr.real
     j_imag = j_arr.imag
+    logabs_j = np.log10(np.maximum(np.abs(j_arr), 1e-30))
 
     results = {}
     for d in range(z_np.shape[1]):
-        # Correlation with Re(j)
-        corr_real = np.corrcoef(z_np[:, d], j_real)[0, 1]
-        results[f'z{d}_vs_Re_j'] = float(corr_real) if np.isfinite(corr_real) else 0.0
-        # Correlation with Im(j)
-        corr_imag = np.corrcoef(z_np[:, d], j_imag)[0, 1]
-        results[f'z{d}_vs_Im_j'] = float(corr_imag) if np.isfinite(corr_imag) else 0.0
+        results[f'z{d}_vs_Re_j'] = _pearson_correlation(z_np[:, d], j_real)
+        results[f'z{d}_vs_Im_j'] = _pearson_correlation(z_np[:, d], j_imag)
+        results[f'z{d}_vs_logabsj_pearson'] = _pearson_correlation(z_np[:, d], logabs_j)
+        results[f'z{d}_vs_logabsj_spearman'] = _spearman_correlation(z_np[:, d], logabs_j)
+        results[f'z{d}_vs_logabsj_mutual_info'] = _mutual_information(z_np[:, d], logabs_j)
 
     # Best absolute correlation across any combination
-    abs_corrs = [abs(v) for v in results.values()]
+    abs_corrs = [
+        abs(value) for key, value in results.items()
+        if key.endswith('_vs_Re_j') or key.endswith('_vs_Im_j')
+    ]
+    logabs_pearsons = [
+        abs(value) for key, value in results.items()
+        if key.endswith('_vs_logabsj_pearson')
+    ]
+    logabs_spearmans = [
+        abs(value) for key, value in results.items()
+        if key.endswith('_vs_logabsj_spearman')
+    ]
+    logabs_mis = [
+        value for key, value in results.items()
+        if key.endswith('_vs_logabsj_mutual_info')
+    ]
+
     results['max_abs_correlation'] = max(abs_corrs) if abs_corrs else 0.0
+    results['max_abs_logabsj_pearson'] = max(logabs_pearsons) if logabs_pearsons else 0.0
+    results['max_abs_logabsj_spearman'] = max(logabs_spearmans) if logabs_spearmans else 0.0
+    results['max_logabsj_mutual_info'] = max(logabs_mis) if logabs_mis else 0.0
 
     return results

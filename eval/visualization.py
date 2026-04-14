@@ -10,10 +10,13 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
 from flax.training.train_state import TrainState
+from sklearn.decomposition import PCA
 
 from data.dataset import Dataset
 from data.generation import generate_t1_signals, generate_t2_signals
-from eval.metrics import encode_dataset
+from eval.metrics import (
+    encode_dataset, compute_j_correlation,
+)
 
 
 def _angle_colormap(thetas: np.ndarray) -> np.ndarray:
@@ -437,25 +440,33 @@ def plot_lattice_latent_scatter(
 
     tau_real = thetas_np[:, 0]
     tau_imag = thetas_np[:, 1]
+    axis_labels = ('z_0', 'z_1')
+
+    if z.shape[1] > 2:
+        pca = PCA(n_components=2)
+        z_plot = pca.fit_transform(z)
+        axis_labels = ('PC1', 'PC2')
+    else:
+        z_plot = z
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
     # Panel 1: Latent scatter colored by Re(τ)
     ax = axes[0, 0]
-    sc = ax.scatter(z[:, 0], z[:, 1], c=tau_real, cmap='coolwarm',
+    sc = ax.scatter(z_plot[:, 0], z_plot[:, 1], c=tau_real, cmap='coolwarm',
                     s=8, alpha=0.7)
-    ax.set_xlabel('z_0')
-    ax.set_ylabel('z_1')
+    ax.set_xlabel(axis_labels[0])
+    ax.set_ylabel(axis_labels[1])
     ax.set_title('Latent space (color=Re(τ))')
     ax.grid(True, alpha=0.2)
     plt.colorbar(sc, ax=ax, label='Re(τ)')
 
     # Panel 2: Latent scatter colored by Im(τ)
     ax = axes[0, 1]
-    sc = ax.scatter(z[:, 0], z[:, 1], c=tau_imag, cmap='viridis',
+    sc = ax.scatter(z_plot[:, 0], z_plot[:, 1], c=tau_imag, cmap='viridis',
                     s=8, alpha=0.7)
-    ax.set_xlabel('z_0')
-    ax.set_ylabel('z_1')
+    ax.set_xlabel(axis_labels[0])
+    ax.set_ylabel(axis_labels[1])
     ax.set_title('Latent space (color=Im(τ))')
     ax.grid(True, alpha=0.2)
     plt.colorbar(sc, ax=ax, label='Im(τ)')
@@ -477,11 +488,11 @@ def plot_lattice_latent_scatter(
     # Panel 4: Latent with fundamental domain boundary overlay
     # (only meaningful if latent ≈ fundamental domain coordinates)
     ax = axes[1, 1]
-    sc = ax.scatter(z[:, 0], z[:, 1],
+    sc = ax.scatter(z_plot[:, 0], z_plot[:, 1],
                     c=np.sqrt(tau_real**2 + tau_imag**2),
                     cmap='plasma', s=8, alpha=0.7)
-    ax.set_xlabel('z_0')
-    ax.set_ylabel('z_1')
+    ax.set_xlabel(axis_labels[0])
+    ax.set_ylabel(axis_labels[1])
     ax.set_title('Latent space (color=|τ|)')
     ax.grid(True, alpha=0.2)
     plt.colorbar(sc, ax=ax, label='|τ|')
@@ -510,46 +521,67 @@ def plot_j_invariant_correlation(
     """
     z_np = np.array(z_latent)
     j_arr = np.array(j_values)
-    j_real = j_arr.real
-    j_imag = j_arr.imag
+    logabs_j = np.log10(np.maximum(np.abs(j_arr), 1e-30))
+    corr_metrics = compute_j_correlation(z_np, j_arr)
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    n_rows = z_np.shape[1] + 1
+    fig, axes = plt.subplots(n_rows, 2, figsize=(12, 3.2 * n_rows))
+    axes = np.atleast_2d(axes)
 
-    # z_0 vs Re(j)
-    ax = axes[0, 0]
-    ax.scatter(j_real, z_np[:, 0], s=5, alpha=0.5)
-    corr = np.corrcoef(j_real, z_np[:, 0])[0, 1]
-    ax.set_xlabel('Re(j(τ))')
-    ax.set_ylabel('z_0')
-    ax.set_title(f'z_0 vs Re(j), corr={corr:.3f}')
-    ax.grid(True, alpha=0.2)
+    for d in range(z_np.shape[1]):
+        ax = axes[d, 0]
+        pearson = corr_metrics.get(f'z{d}_vs_logabsj_pearson', 0.0)
+        spearman = corr_metrics.get(f'z{d}_vs_logabsj_spearman', 0.0)
+        mi = corr_metrics.get(f'z{d}_vs_logabsj_mutual_info', 0.0)
+        corr_re = corr_metrics.get(f'z{d}_vs_Re_j', 0.0)
+        corr_im = corr_metrics.get(f'z{d}_vs_Im_j', 0.0)
+        ax.scatter(logabs_j, z_np[:, d], s=5, alpha=0.5)
+        ax.set_xlabel('log10|j(τ)|')
+        ax.set_ylabel(f'z_{d}')
+        ax.set_title(
+            f'z_{d} vs log10|j|, Pearson={pearson:.3f}, '
+            f'Spearman={spearman:.3f}, MI={mi:.3f}'
+        )
+        ax.grid(True, alpha=0.2)
 
-    # z_0 vs Im(j)
-    ax = axes[0, 1]
-    ax.scatter(j_imag, z_np[:, 0], s=5, alpha=0.5)
-    corr = np.corrcoef(j_imag, z_np[:, 0])[0, 1]
-    ax.set_xlabel('Im(j(τ))')
-    ax.set_ylabel('z_0')
-    ax.set_title(f'z_0 vs Im(j), corr={corr:.3f}')
-    ax.grid(True, alpha=0.2)
+        ax = axes[d, 1]
+        ax.axis('off')
+        ax.text(
+            0.0, 1.0,
+            '\n'.join([
+                f'z_{d} vs Re(j) Pearson: {corr_re:.3f}',
+                f'z_{d} vs Im(j) Pearson: {corr_im:.3f}',
+            ]),
+            ha='left', va='top', transform=ax.transAxes,
+        )
 
-    # z_1 vs Re(j)
-    ax = axes[1, 0]
-    ax.scatter(j_real, z_np[:, 1], s=5, alpha=0.5)
-    corr = np.corrcoef(j_real, z_np[:, 1])[0, 1]
-    ax.set_xlabel('Re(j(τ))')
-    ax.set_ylabel('z_1')
-    ax.set_title(f'z_1 vs Re(j), corr={corr:.3f}')
-    ax.grid(True, alpha=0.2)
+    summary_left = axes[-1, 0]
+    summary_left.axis('off')
+    summary_left.text(
+        0.0, 1.0,
+        '\n'.join([
+            'Summary',
+            f"max |corr| vs Re/Im(j): {corr_metrics.get('max_abs_correlation', 0.0):.3f}",
+            f"max |corr| vs log10|j| (Pearson): "
+            f"{corr_metrics.get('max_abs_logabsj_pearson', 0.0):.3f}",
+            f"max |corr| vs log10|j| (Spearman): "
+            f"{corr_metrics.get('max_abs_logabsj_spearman', 0.0):.3f}",
+            f"max MI vs log10|j|: {corr_metrics.get('max_logabsj_mutual_info', 0.0):.3f}",
+        ]),
+        ha='left', va='top', transform=summary_left.transAxes,
+    )
 
-    # z_1 vs Im(j)
-    ax = axes[1, 1]
-    ax.scatter(j_imag, z_np[:, 1], s=5, alpha=0.5)
-    corr = np.corrcoef(j_imag, z_np[:, 1])[0, 1]
-    ax.set_xlabel('Im(j(τ))')
-    ax.set_ylabel('z_1')
-    ax.set_title(f'z_1 vs Im(j), corr={corr:.3f}')
-    ax.grid(True, alpha=0.2)
+    summary_right = axes[-1, 1]
+    summary_right.axis('off')
+    summary_right.text(
+        0.0, 1.0,
+        '\n'.join([
+            'Notes',
+            '- Main comparison uses log10|j| to control cusp-driven scale.',
+            '- Re(j), Im(j) Pearson values are retained as reference.',
+        ]),
+        ha='left', va='top', transform=summary_right.transAxes,
+    )
 
     fig.suptitle('Latent vs j-invariant correlation', fontsize=14)
     fig.tight_layout()

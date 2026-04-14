@@ -23,6 +23,7 @@ def get_config() -> ml_collections.ConfigDict:
     config.data.lattice_t_max = 5.0             # theta function t range end
     config.data.lattice_y_max = 3.0             # Im(τ) upper bound (cusp control)
     config.data.lattice_sample_region = 'fundamental_domain'  # 'fundamental_domain' | 'halfplane'
+    config.data.lattice_signal_normalization = 'none'  # 'none' | 'max'
 
     # --- Model ---
     config.model = ml_collections.ConfigDict()
@@ -31,6 +32,7 @@ def get_config() -> ml_collections.ConfigDict:
     config.model.encoder_hidden = (256, 128, 64)
     config.model.decoder_hidden = (64, 128, 256)
     config.model.activation = 'relu'            # 'relu' | 'tanh' | 'gelu'
+    config.model.vae_beta = 1.0                 # KL weight for VAE runs
 
     # --- Training ---
     config.train = ml_collections.ConfigDict()
@@ -41,6 +43,7 @@ def get_config() -> ml_collections.ConfigDict:
     config.train.lr_schedule = 'constant'       # 'constant' | 'cosine'
     config.train.patience = 30                  # early stopping patience
     config.train.log_every = 10                 # log metrics every N epochs
+    config.train.modular_invariance_weight = 0.0
 
     # --- Checkpoint ---
     config.checkpoint = ml_collections.ConfigDict()

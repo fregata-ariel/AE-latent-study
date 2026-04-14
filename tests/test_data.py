@@ -5,8 +5,16 @@ import jax.numpy as jnp
 import numpy as np
 
 from configs.default import get_config
-from data.generation import generate_t1_signals, generate_t2_signals, generate_dataset
+from data.generation import (
+    apply_modular_transform,
+    generate_t1_signals,
+    generate_t2_signals,
+    generate_dataset,
+    make_cyclic_modular_partners,
+    normalize_lattice_signals,
+)
 from data.dataset import Dataset, create_splits, batched_iterator
+from eval.metrics import compute_j_correlation
 
 
 def test_t1_signal_shape():
@@ -105,3 +113,50 @@ def test_seed_reproducibility():
     data1 = generate_dataset(config, key)
     data2 = generate_dataset(config, key)
     np.testing.assert_array_equal(np.array(data1['signals']), np.array(data2['signals']))
+
+
+def test_normalize_lattice_signals_max():
+    signals = jnp.array([[1.0, 2.0, 4.0], [3.0, 1.5, 0.75]])
+    normalized = normalize_lattice_signals(signals, method='max')
+    np.testing.assert_allclose(np.max(np.array(normalized), axis=1), 1.0, atol=1e-6)
+
+
+def test_normalize_lattice_signals_none():
+    signals = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    unchanged = normalize_lattice_signals(signals, method='none')
+    np.testing.assert_array_equal(np.array(signals), np.array(unchanged))
+
+
+def test_modular_transforms_preserve_upper_halfplane():
+    tau = np.array([0.1 + 1.2j, -0.3 + 0.9j, 0.4 + 2.1j])
+    for name in ('T', 'S', 'ST'):
+        transformed = apply_modular_transform(tau, name)
+        assert np.all(transformed.imag > 0.0)
+
+    partners, names = make_cyclic_modular_partners(tau)
+    assert list(names) == ['T', 'S', 'ST']
+    assert np.all(partners.imag > 0.0)
+
+
+def test_compute_j_correlation_extended_metrics():
+    z = jnp.stack([
+        jnp.linspace(-1.0, 1.0, 32),
+        jnp.linspace(1.0, -1.0, 32),
+    ], axis=-1)
+    logabs = np.linspace(0.0, 3.0, 32)
+    j_values = np.exp(logabs).astype(np.complex128)
+
+    metrics = compute_j_correlation(z, j_values)
+
+    for key in (
+        'z0_vs_logabsj_pearson',
+        'z0_vs_logabsj_spearman',
+        'z0_vs_logabsj_mutual_info',
+        'max_abs_logabsj_pearson',
+        'max_abs_logabsj_spearman',
+        'max_logabsj_mutual_info',
+    ):
+        assert key in metrics
+        assert np.isfinite(metrics[key])
+
+    assert metrics['z0_vs_logabsj_spearman'] > 0.99
