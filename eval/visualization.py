@@ -259,17 +259,9 @@ def plot_latent_interpolation(
         alphas = jnp.linspace(0, 1, n_points)
         z_interp = z_a + alphas[:, None] * (z_b - z_a)
 
-    # Decode interpolated latents
-    # Access the decoder through the model's decode method
-    # We need to call the model's decoder directly
-    from models.ae import AutoEncoder
-    from models.torus_ae import TorusAutoEncoder
-    from models.vae import VAE as VAEModel
-
-    model = create_model_from_config(config)
-    # Use apply_fn with method if available, otherwise reconstruct
-    # For simplicity, feed latent through the decoder part
-    # We achieve this by using a helper that calls decode
+    # Decode interpolated latents via _decode_latents().
+    # _decode_latents() is responsible for constructing the model with
+    # models.create_model(config) and calling model.decode.
     decoded_signals = _decode_latents(state, z_interp, config)
     decoded_np = np.array(decoded_signals)
 
@@ -306,26 +298,16 @@ def plot_latent_interpolation(
 def _decode_latents(state, z, config):
     """Decode latent vectors using the model's decoder.
 
-    This works by constructing a signal from the decoder sub-module.
-    We use a trick: apply the full model is not possible for just decode,
-    so we use flax's module access pattern.
+    This helper builds the model via models.create_model(config) and
+    runs model.decode through flax's method dispatch.
     """
     from models import create_model
-    import flax.linen as nn
 
     model = create_model(config)
-    latent_type = config.model.latent_type
 
-    # Use bound module approach
-    if latent_type == 'vae':
-        # For VAE, decoder is a sub-module
-        @jax.jit
-        def decode_fn(params, z):
-            return model.apply({'params': params}, z, method=model.decode)
-    else:
-        @jax.jit
-        def decode_fn(params, z):
-            return model.apply({'params': params}, z, method=model.decode)
+    @jax.jit
+    def decode_fn(params, z):
+        return model.apply({'params': params}, z, method=model.decode)
 
     return decode_fn(state.params, z)
 
