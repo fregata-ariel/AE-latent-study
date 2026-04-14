@@ -29,6 +29,9 @@ def compute_reconstruction_error(
     all_mse = []
     all_mae = []
 
+    if len(dataset) == 0:
+        raise ValueError('Empty dataset for reconstruction error')
+
     for batch_signals, _ in batched_iterator(dataset, batch_size, key, shuffle=False):
         if is_vae:
             x_hat, _, _, _ = state.apply_fn(
@@ -40,6 +43,23 @@ def compute_reconstruction_error(
         diff = batch_signals - x_hat
         all_mse.append(float(jnp.mean(diff ** 2)))
         all_mae.append(float(jnp.mean(jnp.abs(diff))))
+
+    n_covered = (len(dataset) // batch_size) * batch_size
+    if n_covered < len(dataset):
+        remainder = dataset.signals[n_covered:]
+        if is_vae:
+            x_hat, _, _, _ = state.apply_fn(
+                {'params': state.params}, remainder, key, deterministic=True,
+            )
+        else:
+            x_hat, _ = state.apply_fn({'params': state.params}, remainder)
+
+        diff = remainder - x_hat
+        all_mse.append(float(jnp.mean(diff ** 2)))
+        all_mae.append(float(jnp.mean(jnp.abs(diff))))
+
+    if not all_mse:
+        raise ValueError('Empty dataset for reconstruction error')
 
     return {
         'mse': float(np.mean(all_mse)),
