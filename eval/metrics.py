@@ -2,7 +2,6 @@
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from flax.training.train_state import TrainState
 
 from data.dataset import Dataset, batched_iterator
@@ -26,8 +25,9 @@ def compute_reconstruction_error(
         Dictionary with 'mse' and 'mae'.
     """
     key = jax.random.PRNGKey(0)  # deterministic for eval
-    all_mse = []
-    all_mae = []
+    sum_sq_err = 0.0
+    sum_abs_err = 0.0
+    n_elems = 0
 
     if len(dataset) == 0:
         raise ValueError('Empty dataset for reconstruction error')
@@ -41,8 +41,9 @@ def compute_reconstruction_error(
             x_hat, _ = state.apply_fn({'params': state.params}, batch_signals)
 
         diff = batch_signals - x_hat
-        all_mse.append(float(jnp.mean(diff ** 2)))
-        all_mae.append(float(jnp.mean(jnp.abs(diff))))
+        sum_sq_err += float(jnp.sum(diff ** 2))
+        sum_abs_err += float(jnp.sum(jnp.abs(diff)))
+        n_elems += diff.size
 
     n_covered = (len(dataset) // batch_size) * batch_size
     if n_covered < len(dataset):
@@ -55,15 +56,16 @@ def compute_reconstruction_error(
             x_hat, _ = state.apply_fn({'params': state.params}, remainder)
 
         diff = remainder - x_hat
-        all_mse.append(float(jnp.mean(diff ** 2)))
-        all_mae.append(float(jnp.mean(jnp.abs(diff))))
+        sum_sq_err += float(jnp.sum(diff ** 2))
+        sum_abs_err += float(jnp.sum(jnp.abs(diff)))
+        n_elems += diff.size
 
-    if not all_mse:
+    if n_elems == 0:
         raise ValueError('Empty dataset for reconstruction error')
 
     return {
-        'mse': float(np.mean(all_mse)),
-        'mae': float(np.mean(all_mae)),
+        'mse': sum_sq_err / n_elems,
+        'mae': sum_abs_err / n_elems,
     }
 
 
