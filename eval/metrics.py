@@ -7,6 +7,23 @@ from flax.training.train_state import TrainState
 from data.dataset import Dataset, batched_iterator
 
 
+def _iterate_all_samples(
+    dataset: Dataset,
+    batch_size: int,
+    key: jax.Array,
+):
+    """Yield dataset batches with full coverage and an empty-dataset guard."""
+    if len(dataset) == 0:
+        raise ValueError('Empty dataset for evaluation')
+
+    for batch_signals, _ in batched_iterator(dataset, batch_size, key, shuffle=False):
+        yield batch_signals
+
+    n_covered = (len(dataset) // batch_size) * batch_size
+    if n_covered < len(dataset):
+        yield dataset.signals[n_covered:]
+
+
 def compute_reconstruction_error(
     state: TrainState,
     dataset: Dataset,
@@ -28,11 +45,9 @@ def compute_reconstruction_error(
     sum_sq_err = 0.0
     sum_abs_err = 0.0
     n_elems = 0
+    n_samples = 0
 
-    if len(dataset) == 0:
-        raise ValueError('Empty dataset for reconstruction error')
-
-    for batch_signals, _ in batched_iterator(dataset, batch_size, key, shuffle=False):
+    for batch_signals in _iterate_all_samples(dataset, batch_size, key):
         if is_vae:
             x_hat, _, _, _ = state.apply_fn(
                 {'params': state.params}, batch_signals, key, deterministic=True,
@@ -44,21 +59,7 @@ def compute_reconstruction_error(
         sum_sq_err += float(jnp.sum(diff ** 2))
         sum_abs_err += float(jnp.sum(jnp.abs(diff)))
         n_elems += diff.size
-
-    n_covered = (len(dataset) // batch_size) * batch_size
-    if n_covered < len(dataset):
-        remainder = dataset.signals[n_covered:]
-        if is_vae:
-            x_hat, _, _, _ = state.apply_fn(
-                {'params': state.params}, remainder, key, deterministic=True,
-            )
-        else:
-            x_hat, _ = state.apply_fn({'params': state.params}, remainder)
-
-        diff = remainder - x_hat
-        sum_sq_err += float(jnp.sum(diff ** 2))
-        sum_abs_err += float(jnp.sum(jnp.abs(diff)))
-        n_elems += diff.size
+        n_samples += batch_signals.shape[0]
 
     if n_elems == 0:
         raise ValueError('Empty dataset for reconstruction error')
@@ -66,6 +67,7 @@ def compute_reconstruction_error(
     return {
         'mse': sum_sq_err / n_elems,
         'mae': sum_abs_err / n_elems,
+        'n_samples': n_samples,
     }
 
 
@@ -89,25 +91,13 @@ def encode_dataset(
     key = jax.random.PRNGKey(0)
     all_z = []
 
-    for batch_signals, _ in batched_iterator(dataset, batch_size, key, shuffle=False):
+    for batch_signals in _iterate_all_samples(dataset, batch_size, key):
         if is_vae:
             _, z, _, _ = state.apply_fn(
                 {'params': state.params}, batch_signals, key, deterministic=True,
             )
         else:
             _, z = state.apply_fn({'params': state.params}, batch_signals)
-        all_z.append(z)
-
-    # Handle remainder samples not covered by batched_iterator
-    n_covered = (len(dataset) // batch_size) * batch_size
-    if n_covered < len(dataset):
-        remainder = dataset.signals[n_covered:]
-        if is_vae:
-            _, z, _, _ = state.apply_fn(
-                {'params': state.params}, remainder, key, deterministic=True,
-            )
-        else:
-            _, z = state.apply_fn({'params': state.params}, remainder)
         all_z.append(z)
 
     return jnp.concatenate(all_z, axis=0)
