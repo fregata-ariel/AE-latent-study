@@ -9,3 +9,5 @@ results/
 dist/
 build/
 .env
+.codex
+.claude
