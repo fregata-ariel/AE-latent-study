@@ -83,3 +83,32 @@ class TorusLatent(nn.Module):
         cos_vals = latent[..., :n_angles]
         sin_vals = latent[..., n_angles:]
         return jnp.arctan2(sin_vals, cos_vals)
+
+
+class HalfPlaneLatent(nn.Module):
+    """Project hidden representation to the upper half-plane H = {(x,y) : y > 0}.
+
+    Maps the encoder's output through a Dense layer to produce a 2D latent
+    where the second coordinate (imaginary part of τ) is constrained to be
+    positive via softplus. This is the minimal geometric constraint for
+    learning moduli space structure.
+
+    Attributes:
+        y_min: Minimum value for the imaginary part (default: 0.01).
+    """
+    y_min: float = 0.01
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Map hidden representation to upper half-plane point.
+
+        Args:
+            x: Encoder output, shape (batch, hidden_dim).
+
+        Returns:
+            Latent of shape (batch, 2) as [Re(τ), Im(τ)] with Im(τ) > y_min.
+        """
+        raw = nn.Dense(2)(x)  # (batch, 2)
+        real_part = raw[:, 0:1]                           # Re(τ), unconstrained
+        imag_part = nn.softplus(raw[:, 1:2]) + self.y_min  # Im(τ) > y_min
+        return jnp.concatenate([real_part, imag_part], axis=-1)

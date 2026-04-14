@@ -5,6 +5,7 @@ from flax import linen as nn
 
 from models.ae import AutoEncoder
 from models.torus_ae import TorusAutoEncoder
+from models.modular_ae import ModularAutoEncoder
 from models.vae import VAE
 
 
@@ -39,6 +40,13 @@ def create_model(config: ml_collections.ConfigDict) -> nn.Module:
             output_dim=signal_length,
             activation=activation,
         )
+    elif latent_type == 'halfplane':
+        return ModularAutoEncoder(
+            encoder_hidden=encoder_hidden,
+            decoder_hidden=decoder_hidden,
+            output_dim=signal_length,
+            activation=activation,
+        )
     elif latent_type == 'vae':
         return VAE(
             encoder_hidden=encoder_hidden,
@@ -50,5 +58,5 @@ def create_model(config: ml_collections.ConfigDict) -> nn.Module:
     else:
         raise ValueError(
             f"Unknown latent_type '{latent_type}'. "
-            "Choose from 'standard', 'torus', 'vae'."
+            "Choose from 'standard', 'torus', 'halfplane', 'vae'."
         )
