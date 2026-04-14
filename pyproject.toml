@@ -21,6 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 umap = ["umap-learn"]
+cuda = [
+    "jax[cuda12]",
+]
 
 [tool.setuptools.packages.find]
 include = ["configs*", "data*", "models*", "train*", "eval*"]
