@@ -102,6 +102,7 @@ def write_step2_report(
         '',
         '- Step 2 compares normalized lattice signals, modular-invariance regularization, and latent-capacity expansions.',
         '- Ranking rule: smallest modular mean distance, then largest `log10|j|` Spearman correlation, then smallest reconstruction MSE.',
+        '- Quotient-chart metrics (`trust`, `overlap`, `eff_dim`) are supplementary and track how natural the learned 2D chart looks.',
         '- Normalized runs should be compared against one another, not directly against raw Step 1 MSE values.',
         '',
         '## Step 1 Baseline',
@@ -133,18 +134,21 @@ def write_step2_report(
             '',
             f'## {phase_name}',
             '',
-            '| Experiment | MSE | max Spearman vs log10_abs_j | max MI vs log10_abs_j | SL₂(Z) mean dist | PCA EVR |',
-            '|---|---|---|---|---|---|',
+            '| Experiment | MSE | max Spearman vs log10_abs_j | max MI vs log10_abs_j | SL₂(Z) mean dist | trust | overlap | eff_dim | PCA EVR |',
+            '|---|---|---|---|---|---|---|---|---|',
         ])
         for name in run_names:
             summary = step2_summaries.get(name)
             if summary is None:
-                lines.append(f'| {name} | pending | pending | pending | pending | pending |')
+                lines.append(
+                    f'| {name} | pending | pending | pending | pending | pending | pending | pending | pending |'
+                )
                 continue
 
             recon = summary.get('reconstruction', {})
             j_corr = summary.get('j_correlation', {})
             mod = summary.get('modular_invariance', {})
+            chart = summary.get('chart_quality', {})
             pca = summary.get('pca_explained_variance', [])
             pca_text = (
                 f"{pca[0]:.3f}, {pca[1]:.3f}" if len(pca) >= 2 else '-'
@@ -154,6 +158,9 @@ def write_step2_report(
                 f"{j_corr.get('max_abs_logabsj_spearman', float('nan')):.4f} | "
                 f"{j_corr.get('max_logabsj_mutual_info', float('nan')):.4f} | "
                 f"{mod.get('mean_latent_distance', float('nan')):.4f} | "
+                f"{chart.get('trustworthiness', float('nan')):.4f} | "
+                f"{chart.get('knn_jaccard_mean', float('nan')):.4f} | "
+                f"{chart.get('effective_dimension', float('nan')):.4f} | "
                 f"{pca_text} |"
             )
 
@@ -161,6 +168,7 @@ def write_step2_report(
         if best_name is None:
             lines.extend(['', '- Best run: pending'])
         else:
+            best_chart = best_summary.get('chart_quality', {})
             lines.extend([
                 '',
                 f"- Best run: `{best_name}`",
@@ -169,6 +177,11 @@ def write_step2_report(
                 f"log10|j| Spearman = "
                 f"{best_summary['j_correlation'].get('max_abs_logabsj_spearman', float('nan')):.4f}, "
                 f"MSE = {best_summary['reconstruction']['mse']:.6g}",
+                f"- Orbit-gluing view: smaller modular mean distance is better.",
+                f"- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. "
+                f"(best run here: trust = {best_chart.get('trustworthiness', float('nan')):.4f}, "
+                f"overlap = {best_chart.get('knn_jaccard_mean', float('nan')):.4f}, "
+                f"eff_dim = {best_chart.get('effective_dimension', float('nan')):.4f})",
             ])
 
     overall_best, overall_summary = _select_best_run(
@@ -182,12 +195,17 @@ def write_step2_report(
     if overall_best is None:
         lines.append('- Pending Step 2 execution.')
     else:
+        overall_chart = overall_summary.get('chart_quality', {})
         lines.extend([
             f"- Selected run: `{overall_best}`",
             f"- Modular mean distance: "
             f"{overall_summary['modular_invariance']['mean_latent_distance']:.4f}",
             f"- max Spearman vs log10|j|: "
             f"{overall_summary['j_correlation'].get('max_abs_logabsj_spearman', float('nan')):.4f}",
+            f"- Quotient-chart trust / overlap / eff_dim: "
+            f"{overall_chart.get('trustworthiness', float('nan')):.4f} / "
+            f"{overall_chart.get('knn_jaccard_mean', float('nan')):.4f} / "
+            f"{overall_chart.get('effective_dimension', float('nan')):.4f}",
             f"- Reconstruction MSE: {overall_summary['reconstruction']['mse']:.6g}",
         ])
 
@@ -239,18 +257,23 @@ def run_all(
     print(f"{'=' * 60}")
 
     print(
-        f"\n{'Experiment':<32} {'MSE':>10} {'log|j|ρ':>10} {'ModDist':>10}"
+        f"\n{'Experiment':<32} {'MSE':>10} {'log|j|ρ':>10} "
+        f"{'ModDist':>10} {'Trust':>8} {'Overlap':>8} {'EffDim':>8}"
     )
-    print('-' * 68)
+    print('-' * 96)
     for name, summary in all_summaries.items():
         recon = summary.get('reconstruction', {})
         j_corr = summary.get('j_correlation', {})
         mod = summary.get('modular_invariance', {})
+        chart = summary.get('chart_quality', {})
         print(
             f"{name:<32} "
             f"{recon.get('mse', float('nan')):>10.6f} "
             f"{j_corr.get('max_abs_logabsj_spearman', float('nan')):>10.4f} "
-            f"{mod.get('mean_latent_distance', float('nan')):>10.4f}"
+            f"{mod.get('mean_latent_distance', float('nan')):>10.4f} "
+            f"{chart.get('trustworthiness', float('nan')):>8.4f} "
+            f"{chart.get('knn_jaccard_mean', float('nan')):>8.4f} "
+            f"{chart.get('effective_dimension', float('nan')):>8.4f}"
         )
 
     return all_summaries

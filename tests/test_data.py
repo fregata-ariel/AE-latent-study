@@ -14,7 +14,7 @@ from data.generation import (
     normalize_lattice_signals,
 )
 from data.dataset import Dataset, create_splits, batched_iterator
-from eval.metrics import compute_j_correlation
+from eval.metrics import compute_j_correlation, compute_quotient_chart_quality
 
 
 def test_t1_signal_shape():
@@ -160,3 +160,55 @@ def test_compute_j_correlation_extended_metrics():
         assert np.isfinite(metrics[key])
 
     assert metrics['z0_vs_logabsj_spearman'] > 0.99
+
+
+def _make_tau_chart_grid(nx: int = 8, ny: int = 6):
+    x = np.linspace(-0.45, 0.45, nx)
+    y = np.linspace(1.0, 1.8, ny)
+    xx, yy = np.meshgrid(x, y, indexing='xy')
+    tau = (xx + 1j * yy).ravel()
+    coords = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+    return tau, coords
+
+
+def test_compute_quotient_chart_quality_for_good_2d_chart():
+    tau, coords = _make_tau_chart_grid()
+    z = coords + 0.05 * np.stack([coords[:, 1], -coords[:, 0]], axis=-1)
+
+    metrics = compute_quotient_chart_quality(
+        z, tau, n_neighbors=4, max_samples=0,
+    )
+
+    assert metrics['trustworthiness'] > 0.98
+    assert metrics['knn_jaccard_mean'] > 0.6
+    assert 1.7 < metrics['effective_dimension'] < 2.1
+
+
+def test_compute_quotient_chart_quality_detects_1d_collapse():
+    tau, coords = _make_tau_chart_grid()
+    z_good = coords + 0.05 * np.stack([coords[:, 1], -coords[:, 0]], axis=-1)
+    z_collapsed = np.stack([coords[:, 1], np.zeros(len(coords))], axis=-1)
+
+    good_metrics = compute_quotient_chart_quality(
+        z_good, tau, n_neighbors=4, max_samples=0,
+    )
+    collapsed_metrics = compute_quotient_chart_quality(
+        z_collapsed, tau, n_neighbors=4, max_samples=0,
+    )
+
+    assert collapsed_metrics['effective_dimension'] < 1.1
+    assert collapsed_metrics['knn_jaccard_mean'] < good_metrics['knn_jaccard_mean']
+    assert collapsed_metrics['trustworthiness'] < good_metrics['trustworthiness']
+
+
+def test_compute_quotient_chart_quality_is_stable_under_modular_reduction():
+    tau, coords = _make_tau_chart_grid()
+    z = coords.copy()
+    tau_transformed = apply_modular_transform(tau, 'T')
+
+    metrics = compute_quotient_chart_quality(
+        z, tau_transformed, n_neighbors=4, max_samples=0,
+    )
+
+    assert metrics['trustworthiness'] > 0.98
+    assert metrics['knn_jaccard_mean'] > 0.6

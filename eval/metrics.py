@@ -4,7 +4,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax.training.train_state import TrainState
+from sklearn.decomposition import PCA
 from sklearn.feature_selection import mutual_info_regression
+from sklearn.manifold import trustworthiness
+from sklearn.neighbors import NearestNeighbors
 
 from data.dataset import Dataset, batched_iterator
 
@@ -293,6 +296,162 @@ def _mutual_information(x: np.ndarray, y: np.ndarray) -> float:
 
     mi = mutual_info_regression(x_arr, y_arr, random_state=42)
     return float(mi[0]) if len(mi) else 0.0
+
+
+def _deterministic_subsample_indices(
+    n_total: int,
+    max_samples: int | None,
+) -> np.ndarray:
+    """Return deterministic sorted indices for evaluation subsampling."""
+    if max_samples is None or max_samples <= 0 or n_total <= max_samples:
+        return np.arange(n_total)
+
+    rng = np.random.default_rng(42)
+    return np.sort(rng.choice(n_total, size=max_samples, replace=False))
+
+
+def _neighbor_indices(points: np.ndarray, n_neighbors: int) -> np.ndarray:
+    """Return kNN indices excluding the point itself."""
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors + 1)
+    nbrs.fit(points)
+    return nbrs.kneighbors(return_distance=False)[:, 1:]
+
+
+def _local_knn_jaccard(
+    tau_coords: np.ndarray,
+    latent_coords: np.ndarray,
+    n_neighbors: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute per-point Jaccard overlap between τ-space and latent-space kNN."""
+    tau_knn = _neighbor_indices(tau_coords, n_neighbors)
+    latent_knn = _neighbor_indices(latent_coords, n_neighbors)
+
+    overlaps = np.zeros(tau_coords.shape[0], dtype=float)
+    for idx in range(tau_coords.shape[0]):
+        tau_set = set(tau_knn[idx].tolist())
+        latent_set = set(latent_knn[idx].tolist())
+        union = tau_set | latent_set
+        overlaps[idx] = (
+            len(tau_set & latent_set) / len(union)
+            if union else 0.0
+        )
+
+    return overlaps, tau_knn, latent_knn
+
+
+def _participation_ratio(latent_coords: np.ndarray) -> float:
+    """Estimate effective latent dimension from covariance eigenvalues."""
+    z = np.asarray(latent_coords, dtype=float)
+    if z.ndim != 2 or z.shape[0] < 2:
+        return 0.0
+
+    centered = z - np.mean(z, axis=0, keepdims=True)
+    cov = np.atleast_2d(np.cov(centered, rowvar=False))
+    eigvals = np.linalg.eigvalsh(cov)
+    eigvals = np.clip(eigvals, a_min=0.0, a_max=None)
+
+    denom = float(np.sum(eigvals ** 2))
+    numer = float(np.sum(eigvals)) ** 2
+    if denom <= 1e-30:
+        return 0.0
+    return numer / denom
+
+
+def compute_quotient_chart_quality(
+    z_latent: jnp.ndarray,
+    tau_values,
+    n_neighbors: int = 8,
+    max_samples: int = 2000,
+    return_aux: bool = False,
+):
+    """Evaluate whether latent space behaves like a 2D quotient chart.
+
+    Args:
+        z_latent: Latent representations, shape (N, d).
+        tau_values: Complex τ values, shape (N,).
+        n_neighbors: Neighborhood size for local chart metrics.
+        max_samples: Deterministic subsample cap for expensive metrics.
+        return_aux: Whether to return per-point data for visualization.
+
+    Returns:
+        Summary dictionary, or `(summary, aux)` when `return_aux=True`.
+    """
+    from data.generation import reduce_to_fundamental_domain
+
+    z_np = np.asarray(z_latent, dtype=float)
+    tau_arr = np.asarray(tau_values, dtype=complex).reshape(-1)
+
+    if z_np.ndim != 2:
+        raise ValueError('z_latent must have shape (N, d)')
+    if z_np.shape[0] != tau_arr.shape[0]:
+        raise ValueError('z_latent and tau_values must have the same length')
+    if n_neighbors < 1:
+        raise ValueError('n_neighbors must be >= 1')
+
+    sample_indices = _deterministic_subsample_indices(z_np.shape[0], max_samples)
+    z_eval = z_np[sample_indices]
+    tau_eval = tau_arr[sample_indices]
+    tau_fd = np.asarray(reduce_to_fundamental_domain(tau_eval), dtype=complex).reshape(-1)
+    tau_coords = np.stack([tau_fd.real, tau_fd.imag], axis=-1)
+
+    n_eval = z_eval.shape[0]
+    if n_eval < 3:
+        summary = {
+            'tau_geometry': 'euclidean_fd',
+            'latent_metric_space': 'raw',
+            'n_neighbors': 0,
+            'n_samples': int(n_eval),
+            'trustworthiness': 0.0,
+            'knn_jaccard_mean': 0.0,
+            'knn_jaccard_std': 0.0,
+            'effective_dimension': 0.0,
+            'pc1_explained_variance': 0.0,
+            'pc2_explained_variance': 0.0,
+            'pc2_pc1_ratio': 0.0,
+        }
+        aux = {
+            'sample_indices': sample_indices,
+            'tau_coords': tau_coords,
+            'latent_coords': z_eval,
+            'local_knn_jaccard': np.zeros(n_eval, dtype=float),
+        }
+        return (summary, aux) if return_aux else summary
+
+    k_eval = min(n_neighbors, max(1, (n_eval - 1) // 2))
+    local_overlap, _, _ = _local_knn_jaccard(tau_coords, z_eval, k_eval)
+    trust = float(trustworthiness(tau_coords, z_eval, n_neighbors=k_eval))
+
+    n_components = min(2, z_eval.shape[1], n_eval)
+    pca = PCA(n_components=n_components)
+    pca.fit(z_eval)
+    explained = pca.explained_variance_ratio_
+    pc1 = float(explained[0]) if explained.size >= 1 else 0.0
+    pc2 = float(explained[1]) if explained.size >= 2 else 0.0
+
+    summary = {
+        'tau_geometry': 'euclidean_fd',
+        'latent_metric_space': 'raw',
+        'n_neighbors': int(k_eval),
+        'n_samples': int(n_eval),
+        'trustworthiness': trust,
+        'knn_jaccard_mean': float(np.mean(local_overlap)),
+        'knn_jaccard_std': float(np.std(local_overlap)),
+        'effective_dimension': float(_participation_ratio(z_eval)),
+        'pc1_explained_variance': pc1,
+        'pc2_explained_variance': pc2,
+        'pc2_pc1_ratio': float(pc2 / pc1) if pc1 > 1e-12 else 0.0,
+    }
+
+    if not return_aux:
+        return summary
+
+    aux = {
+        'sample_indices': sample_indices,
+        'tau_coords': tau_coords,
+        'latent_coords': z_eval,
+        'local_knn_jaccard': local_overlap,
+    }
+    return summary, aux
 
 
 def compute_j_correlation(

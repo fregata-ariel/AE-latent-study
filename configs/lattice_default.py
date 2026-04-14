@@ -55,5 +55,7 @@ def get_config() -> ml_collections.ConfigDict:
     config.eval.output_dir = 'results/'
     config.eval.n_interpolation = 50
     config.eval.use_umap = False
+    config.eval.chart_n_neighbors = 8
+    config.eval.chart_max_samples = 2000
 
     return config

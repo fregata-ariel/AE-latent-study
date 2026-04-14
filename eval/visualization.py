@@ -588,3 +588,100 @@ def plot_j_invariant_correlation(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
+
+
+def plot_quotient_chart_quality(
+    chart_summary: dict,
+    chart_aux: dict,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Visualize quotient-chart quality diagnostics for lattice experiments."""
+    tau_coords = np.asarray(chart_aux['tau_coords'], dtype=float)
+    latent_coords = np.asarray(chart_aux['latent_coords'], dtype=float)
+    local_overlap = np.asarray(chart_aux['local_knn_jaccard'], dtype=float)
+
+    latent_labels = ('z_0', 'z_1')
+    latent_plot = latent_coords
+    latent_projection_note = 'raw latent'
+
+    if latent_coords.shape[1] > 2:
+        pca = PCA(n_components=2)
+        latent_plot = pca.fit_transform(latent_coords)
+        latent_labels = ('PC1', 'PC2')
+        latent_projection_note = 'PCA projection for plotting only'
+    elif latent_coords.shape[1] == 1:
+        latent_plot = np.column_stack([latent_coords[:, 0], np.zeros(latent_coords.shape[0])])
+        latent_labels = ('z_0', '0')
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Panel 1: τ in the fundamental domain, colored by local overlap.
+    ax = axes[0, 0]
+    sc = ax.scatter(
+        tau_coords[:, 0], tau_coords[:, 1],
+        c=local_overlap, cmap='viridis', vmin=0.0, vmax=1.0,
+        s=10, alpha=0.8,
+    )
+    _draw_fundamental_domain(ax)
+    ax.set_xlabel('Re(τ_F)')
+    ax.set_ylabel('Im(τ_F)')
+    ax.set_title('Fundamental-domain chart (color=local kNN overlap)')
+    ax.set_xlim(-0.7, 0.7)
+    ax.set_ylim(0.6, max(3.2, float(np.max(tau_coords[:, 1]) + 0.1)))
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.2)
+    plt.colorbar(sc, ax=ax, label='kNN Jaccard')
+
+    # Panel 2: latent scatter with the same color signal.
+    ax = axes[0, 1]
+    sc = ax.scatter(
+        latent_plot[:, 0], latent_plot[:, 1],
+        c=local_overlap, cmap='viridis', vmin=0.0, vmax=1.0,
+        s=10, alpha=0.8,
+    )
+    ax.set_xlabel(latent_labels[0])
+    ax.set_ylabel(latent_labels[1])
+    ax.set_title('Latent chart (same local overlap coloring)')
+    ax.grid(True, alpha=0.2)
+    plt.colorbar(sc, ax=ax, label='kNN Jaccard')
+
+    # Panel 3: overlap distribution.
+    ax = axes[1, 0]
+    ax.hist(local_overlap, bins=20, range=(0.0, 1.0), color='tab:green', alpha=0.8)
+    ax.axvline(chart_summary.get('knn_jaccard_mean', 0.0), color='black', linestyle='--')
+    ax.set_xlabel('Local kNN Jaccard overlap')
+    ax.set_ylabel('Count')
+    ax.set_title('Local neighborhood overlap distribution')
+    ax.grid(True, alpha=0.2)
+
+    # Panel 4: text summary.
+    ax = axes[1, 1]
+    ax.axis('off')
+    ax.text(
+        0.0, 1.0,
+        '\n'.join([
+            'Chart Summary',
+            f"tau geometry: {chart_summary.get('tau_geometry', 'unknown')}",
+            f"latent metric: {chart_summary.get('latent_metric_space', 'unknown')}",
+            f"n samples: {chart_summary.get('n_samples', 0)}",
+            f"n neighbors: {chart_summary.get('n_neighbors', 0)}",
+            '',
+            f"trustworthiness: {chart_summary.get('trustworthiness', 0.0):.4f}",
+            f"kNN overlap mean: {chart_summary.get('knn_jaccard_mean', 0.0):.4f}",
+            f"kNN overlap std: {chart_summary.get('knn_jaccard_std', 0.0):.4f}",
+            f"effective dim: {chart_summary.get('effective_dimension', 0.0):.4f}",
+            '',
+            f"PC1 EVR: {chart_summary.get('pc1_explained_variance', 0.0):.4f}",
+            f"PC2 EVR: {chart_summary.get('pc2_explained_variance', 0.0):.4f}",
+            f"PC2/PC1: {chart_summary.get('pc2_pc1_ratio', 0.0):.4f}",
+            '',
+            f"plot note: {latent_projection_note}",
+        ]),
+        ha='left', va='top', transform=ax.transAxes,
+    )
+
+    fig.suptitle('Quotient Chart Quality', fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig

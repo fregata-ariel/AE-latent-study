@@ -141,7 +141,13 @@ def test_lattice_pipeline_without_invariance():
         assert 'train_inv_loss' not in history
         assert 'j_correlation' in summary
         assert 'max_abs_logabsj_spearman' in summary['j_correlation']
+        assert 'chart_quality' in summary
+        assert 'trustworthiness' in summary['chart_quality']
         assert 'modular_invariance' in summary
+        chart_plot = os.path.join(
+            tmpdir, config.eval.output_dir, 'quotient_chart_quality.png',
+        )
+        assert os.path.exists(chart_plot)
 
 
 def test_lattice_pipeline_with_invariance():
@@ -171,6 +177,8 @@ def test_step2_runner_with_tiny_config():
         summary = summaries['tiny_step2']
         assert 'j_correlation' in summary
         assert 'max_abs_logabsj_spearman' in summary['j_correlation']
+        assert 'chart_quality' in summary
+        assert 'trustworthiness' in summary['chart_quality']
         assert 'modular_invariance' in summary
 
         summary_path = os.path.join(tmpdir, 'tiny_step2_summaries.json')
@@ -178,5 +186,10 @@ def test_step2_runner_with_tiny_config():
         with open(summary_path) as f:
             saved = json.load(f)
         assert 'tiny_step2' in saved
+        assert 'chart_quality' in saved['tiny_step2']
 
         assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'trust' in report_text
+        assert 'eff_dim' in report_text

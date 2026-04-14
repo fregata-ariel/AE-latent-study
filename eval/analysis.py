@@ -13,6 +13,7 @@ from data.dataset import Dataset
 from eval.metrics import (
     compute_reconstruction_error, encode_dataset, check_periodicity,
     check_modular_invariance, compute_j_correlation,
+    compute_quotient_chart_quality,
 )
 from eval.visualization import (
     plot_training_curves,
@@ -22,6 +23,7 @@ from eval.visualization import (
     plot_periodicity_check,
     plot_lattice_latent_scatter,
     plot_j_invariant_correlation,
+    plot_quotient_chart_quality,
 )
 
 
@@ -138,9 +140,11 @@ def run_full_evaluation(
     )
     plt.close(fig)
 
+    z_np = None
+
     if data_type == 'lattice':
         # --- Lattice-specific evaluation ---
-        _run_lattice_evaluation(
+        z_np = _run_lattice_evaluation(
             state, config, train_ds, test_ds, results_dir, summary, is_vae,
         )
     else:
@@ -168,9 +172,13 @@ def run_full_evaluation(
             plt.close(fig)
 
     # 8. PCA analysis (useful for higher-dim latent)
-    z_np = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
-    if z_np.shape[1] > 2:
-        z_pca, pca = pca_latent(state, train_ds, n_components=2, is_vae=is_vae)
+    if z_np is None:
+        z_np = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
+
+    pca_threshold = 2 if data_type == 'lattice' else 3
+    if z_np.shape[1] >= pca_threshold:
+        pca = PCA(n_components=min(2, z_np.shape[1], z_np.shape[0]))
+        pca.fit(z_np)
         summary['pca_explained_variance'] = pca.explained_variance_ratio_.tolist()
         print(f"  PCA explained variance: {pca.explained_variance_ratio_}")
 
@@ -190,7 +198,7 @@ def _run_lattice_evaluation(
     results_dir: str,
     summary: dict,
     is_vae: bool,
-) -> None:
+) -> np.ndarray:
     """Run lattice-specific evaluation steps.
 
     Args:
@@ -210,10 +218,11 @@ def _run_lattice_evaluation(
     )
     plt.close(fig)
 
+    z = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
+
     # 6. j-invariant correlation
     if train_ds.j_invariant is not None:
         print("  Computing j-invariant correlation...")
-        z = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
         j_corr = compute_j_correlation(z, train_ds.j_invariant)
         summary['j_correlation'] = j_corr
         print(f"  j-invariant max |corr|: {j_corr['max_abs_correlation']:.4f}")
@@ -224,9 +233,33 @@ def _run_lattice_evaluation(
         )
         plt.close(fig)
 
-    # 7. SL₂(Z) modular invariance check
+    # 7. Quotient chart quality
+    if train_ds.tau is not None:
+        print("  Computing quotient chart quality...")
+        chart_summary, chart_aux = compute_quotient_chart_quality(
+            z,
+            train_ds.tau,
+            n_neighbors=getattr(config.eval, 'chart_n_neighbors', 8),
+            max_samples=getattr(config.eval, 'chart_max_samples', 2000),
+            return_aux=True,
+        )
+        summary['chart_quality'] = chart_summary
+        print(f"  Chart trustworthiness: {chart_summary['trustworthiness']:.6f}")
+        print(f"  Chart mean kNN overlap: {chart_summary['knn_jaccard_mean']:.6f}")
+        print(f"  Chart effective dim:   {chart_summary['effective_dimension']:.6f}")
+
+        fig = plot_quotient_chart_quality(
+            chart_summary,
+            chart_aux,
+            save_path=os.path.join(results_dir, 'quotient_chart_quality.png'),
+        )
+        plt.close(fig)
+
+    # 8. SL₂(Z) modular invariance check
     print("  Checking modular invariance...")
     mod_inv = check_modular_invariance(state, config, n_pairs=100, is_vae=is_vae)
     summary['modular_invariance'] = mod_inv
     print(f"  SL₂(Z) mean latent dist: {mod_inv['mean_latent_distance']:.6f}")
     print(f"  SL₂(Z) max latent dist:  {mod_inv['max_latent_distance']:.6f}")
+
+    return z
