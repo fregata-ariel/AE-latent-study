@@ -386,3 +386,173 @@ def plot_periodicity_check(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Lattice / Modular visualization
+# ---------------------------------------------------------------------------
+
+def _draw_fundamental_domain(ax, color='black', linewidth=1.5, alpha=0.5):
+    """Draw the fundamental domain boundary on an axes."""
+    # Left edge: Re(τ) = -0.5
+    ax.axvline(-0.5, color=color, linewidth=linewidth, alpha=alpha,
+               linestyle='--')
+    # Right edge: Re(τ) = 0.5
+    ax.axvline(0.5, color=color, linewidth=linewidth, alpha=alpha,
+               linestyle='--')
+    # Bottom arc: |τ| = 1
+    theta_arc = np.linspace(-np.pi / 3, -2 * np.pi / 3, 100)
+    arc_x = np.cos(theta_arc)
+    arc_y = np.sin(theta_arc)
+    ax.plot(arc_x, arc_y, color=color, linewidth=linewidth, alpha=alpha,
+            linestyle='--')
+
+
+def plot_lattice_latent_scatter(
+    state: TrainState,
+    dataset: Dataset,
+    config,
+    is_vae: bool = False,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Scatter plot of latent codes for lattice experiments.
+
+    Creates two panels:
+    1. Latent space colored by Re(τ) and Im(τ)
+    2. Fundamental domain view with τ coordinates
+
+    Args:
+        state: Trained model state.
+        dataset: Dataset with ground-truth τ parameters.
+        config: Experiment configuration.
+        is_vae: Whether the model is a VAE.
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    z = np.array(encode_dataset(state, dataset, is_vae=is_vae))
+    thetas_np = np.array(dataset.thetas)  # (N, 2): [Re(τ), Im(τ)]
+    latent_type = config.model.latent_type
+
+    tau_real = thetas_np[:, 0]
+    tau_imag = thetas_np[:, 1]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+    # Panel 1: Latent scatter colored by Re(τ)
+    ax = axes[0, 0]
+    sc = ax.scatter(z[:, 0], z[:, 1], c=tau_real, cmap='coolwarm',
+                    s=8, alpha=0.7)
+    ax.set_xlabel('z_0')
+    ax.set_ylabel('z_1')
+    ax.set_title('Latent space (color=Re(τ))')
+    ax.grid(True, alpha=0.2)
+    plt.colorbar(sc, ax=ax, label='Re(τ)')
+
+    # Panel 2: Latent scatter colored by Im(τ)
+    ax = axes[0, 1]
+    sc = ax.scatter(z[:, 0], z[:, 1], c=tau_imag, cmap='viridis',
+                    s=8, alpha=0.7)
+    ax.set_xlabel('z_0')
+    ax.set_ylabel('z_1')
+    ax.set_title('Latent space (color=Im(τ))')
+    ax.grid(True, alpha=0.2)
+    plt.colorbar(sc, ax=ax, label='Im(τ)')
+
+    # Panel 3: True τ in fundamental domain
+    ax = axes[1, 0]
+    sc = ax.scatter(tau_real, tau_imag, c=tau_imag, cmap='viridis',
+                    s=8, alpha=0.7)
+    _draw_fundamental_domain(ax)
+    ax.set_xlabel('Re(τ)')
+    ax.set_ylabel('Im(τ)')
+    ax.set_title('Ground truth τ (fundamental domain)')
+    ax.set_xlim(-0.7, 0.7)
+    ax.set_ylim(0.6, 3.2)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.2)
+    plt.colorbar(sc, ax=ax, label='Im(τ)')
+
+    # Panel 4: Latent with fundamental domain boundary overlay
+    # (only meaningful if latent ≈ fundamental domain coordinates)
+    ax = axes[1, 1]
+    sc = ax.scatter(z[:, 0], z[:, 1],
+                    c=np.sqrt(tau_real**2 + tau_imag**2),
+                    cmap='plasma', s=8, alpha=0.7)
+    ax.set_xlabel('z_0')
+    ax.set_ylabel('z_1')
+    ax.set_title('Latent space (color=|τ|)')
+    ax.grid(True, alpha=0.2)
+    plt.colorbar(sc, ax=ax, label='|τ|')
+
+    fig.suptitle(f'Lattice Latent Space ({latent_type})', fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def plot_j_invariant_correlation(
+    z_latent: np.ndarray,
+    j_values,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Plot correlation between learned latent coordinates and j-invariant.
+
+    Args:
+        z_latent: Latent representations, shape (N, 2).
+        j_values: Complex j-invariant values, shape (N,).
+        save_path: Optional path to save the figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    z_np = np.array(z_latent)
+    j_arr = np.array(j_values)
+    j_real = j_arr.real
+    j_imag = j_arr.imag
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # z_0 vs Re(j)
+    ax = axes[0, 0]
+    ax.scatter(j_real, z_np[:, 0], s=5, alpha=0.5)
+    corr = np.corrcoef(j_real, z_np[:, 0])[0, 1]
+    ax.set_xlabel('Re(j(τ))')
+    ax.set_ylabel('z_0')
+    ax.set_title(f'z_0 vs Re(j), corr={corr:.3f}')
+    ax.grid(True, alpha=0.2)
+
+    # z_0 vs Im(j)
+    ax = axes[0, 1]
+    ax.scatter(j_imag, z_np[:, 0], s=5, alpha=0.5)
+    corr = np.corrcoef(j_imag, z_np[:, 0])[0, 1]
+    ax.set_xlabel('Im(j(τ))')
+    ax.set_ylabel('z_0')
+    ax.set_title(f'z_0 vs Im(j), corr={corr:.3f}')
+    ax.grid(True, alpha=0.2)
+
+    # z_1 vs Re(j)
+    ax = axes[1, 0]
+    ax.scatter(j_real, z_np[:, 1], s=5, alpha=0.5)
+    corr = np.corrcoef(j_real, z_np[:, 1])[0, 1]
+    ax.set_xlabel('Re(j(τ))')
+    ax.set_ylabel('z_1')
+    ax.set_title(f'z_1 vs Re(j), corr={corr:.3f}')
+    ax.grid(True, alpha=0.2)
+
+    # z_1 vs Im(j)
+    ax = axes[1, 1]
+    ax.scatter(j_imag, z_np[:, 1], s=5, alpha=0.5)
+    corr = np.corrcoef(j_imag, z_np[:, 1])[0, 1]
+    ax.set_xlabel('Im(j(τ))')
+    ax.set_ylabel('z_1')
+    ax.set_title(f'z_1 vs Im(j), corr={corr:.3f}')
+    ax.grid(True, alpha=0.2)
+
+    fig.suptitle('Latent vs j-invariant correlation', fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig

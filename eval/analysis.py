@@ -9,13 +9,18 @@ from sklearn.decomposition import PCA
 from flax.training.train_state import TrainState
 
 from data.dataset import Dataset
-from eval.metrics import compute_reconstruction_error, encode_dataset, check_periodicity
+from eval.metrics import (
+    compute_reconstruction_error, encode_dataset, check_periodicity,
+    check_modular_invariance, compute_j_correlation,
+)
 from eval.visualization import (
     plot_training_curves,
     plot_reconstructions,
     plot_latent_scatter,
     plot_latent_interpolation,
     plot_periodicity_check,
+    plot_lattice_latent_scatter,
+    plot_j_invariant_correlation,
 )
 
 
@@ -96,6 +101,7 @@ def run_full_evaluation(
     os.makedirs(results_dir, exist_ok=True)
 
     is_vae = config.model.latent_type == 'vae'
+    data_type = getattr(config.data, 'data_type', 'torus')
     summary = {}
 
     # 1. Reconstruction error
@@ -110,7 +116,7 @@ def run_full_evaluation(
     print(f"  Test MSE: {recon_metrics['mse']:.6f}, MAE: {recon_metrics['mae']:.6f}")
 
     # 2. Periodicity check (T^1 only)
-    if config.data.torus_dim == 1:
+    if data_type == 'torus' and config.data.torus_dim == 1:
         print("Checking periodicity...")
         period_metrics = check_periodicity(state, config, is_vae=is_vae)
         summary['periodicity'] = period_metrics
@@ -129,24 +135,31 @@ def run_full_evaluation(
         save_path=os.path.join(results_dir, 'reconstructions.png'),
     )
 
-    # 5. Latent scatter
-    plot_latent_scatter(
-        state, train_ds, config, is_vae=is_vae,
-        save_path=os.path.join(results_dir, 'latent_scatter.png'),
-    )
-
-    # 6. Latent interpolation
-    plot_latent_interpolation(
-        state, config, n_points=config.eval.n_interpolation, is_vae=is_vae,
-        save_path=os.path.join(results_dir, 'interpolation.png'),
-    )
-
-    # 7. Periodicity check plot (T^1)
-    if config.data.torus_dim == 1:
-        plot_periodicity_check(
-            state, config, is_vae=is_vae,
-            save_path=os.path.join(results_dir, 'periodicity_check.png'),
+    if data_type == 'lattice':
+        # --- Lattice-specific evaluation ---
+        _run_lattice_evaluation(
+            state, config, train_ds, test_ds, results_dir, summary, is_vae,
         )
+    else:
+        # --- Torus-specific evaluation ---
+        # 5. Latent scatter
+        plot_latent_scatter(
+            state, train_ds, config, is_vae=is_vae,
+            save_path=os.path.join(results_dir, 'latent_scatter.png'),
+        )
+
+        # 6. Latent interpolation
+        plot_latent_interpolation(
+            state, config, n_points=config.eval.n_interpolation, is_vae=is_vae,
+            save_path=os.path.join(results_dir, 'interpolation.png'),
+        )
+
+        # 7. Periodicity check plot (T^1)
+        if config.data.torus_dim == 1:
+            plot_periodicity_check(
+                state, config, is_vae=is_vae,
+                save_path=os.path.join(results_dir, 'periodicity_check.png'),
+            )
 
     # 8. PCA analysis (useful for higher-dim latent)
     z_np = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
@@ -161,3 +174,51 @@ def run_full_evaluation(
 
     print(f"Results saved to {results_dir}")
     return summary
+
+
+def _run_lattice_evaluation(
+    state: TrainState,
+    config,
+    train_ds: Dataset,
+    test_ds: Dataset,
+    results_dir: str,
+    summary: dict,
+    is_vae: bool,
+) -> None:
+    """Run lattice-specific evaluation steps.
+
+    Args:
+        state: Trained model state.
+        config: Experiment configuration.
+        train_ds: Training dataset.
+        test_ds: Test dataset.
+        results_dir: Directory to save results.
+        summary: Summary dictionary to update in-place.
+        is_vae: Whether the model is a VAE.
+    """
+    # 5. Lattice latent scatter (with τ coloring and fundamental domain)
+    print("  Generating lattice scatter plots...")
+    plot_lattice_latent_scatter(
+        state, train_ds, config, is_vae=is_vae,
+        save_path=os.path.join(results_dir, 'lattice_latent_scatter.png'),
+    )
+
+    # 6. j-invariant correlation
+    if train_ds.j_invariant is not None:
+        print("  Computing j-invariant correlation...")
+        z = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
+        j_corr = compute_j_correlation(z, train_ds.j_invariant)
+        summary['j_correlation'] = j_corr
+        print(f"  j-invariant max |corr|: {j_corr['max_abs_correlation']:.4f}")
+
+        plot_j_invariant_correlation(
+            z, train_ds.j_invariant,
+            save_path=os.path.join(results_dir, 'j_invariant_correlation.png'),
+        )
+
+    # 7. SL₂(Z) modular invariance check
+    print("  Checking modular invariance...")
+    mod_inv = check_modular_invariance(state, config, n_pairs=100, is_vae=is_vae)
+    summary['modular_invariance'] = mod_inv
+    print(f"  SL₂(Z) mean latent dist: {mod_inv['mean_latent_distance']:.6f}")
+    print(f"  SL₂(Z) max latent dist:  {mod_inv['max_latent_distance']:.6f}")
