@@ -57,6 +57,7 @@ def train_and_evaluate(
     Returns:
         Tuple of (final_state, history_dict, (train_ds, val_ds, test_ds)).
     """
+    workdir = os.path.abspath(workdir)
     os.makedirs(workdir, exist_ok=True)
 
     # Save config
