@@ -37,6 +37,24 @@ PHASES = {
     ],
 }
 
+STEP1_BASELINE_FALLBACK = {
+    'lattice_standard': {
+        'reconstruction': {'mse': 4.255687817931175e-08},
+        'j_correlation': {'max_abs_correlation': 0.008139114111514476},
+        'modular_invariance': {'mean_latent_distance': 1.0194441080093384},
+    },
+    'lattice_halfplane': {
+        'reconstruction': {'mse': 2.0063703879714012e-07},
+        'j_correlation': {'max_abs_correlation': 0.007602388523639556},
+        'modular_invariance': {'mean_latent_distance': 2.0525264739990234},
+    },
+    'lattice_standard_wide': {
+        'reconstruction': {'mse': 5.338775217533111e-06},
+        'j_correlation': {'max_abs_correlation': 0.016996238112451878},
+        'modular_invariance': {'mean_latent_distance': 0.9578040838241577},
+    },
+}
+
 
 def _load_config(config_source: str | Callable[[], object]):
     if callable(config_source):
@@ -74,6 +92,8 @@ def write_step2_report(
     if os.path.exists(baseline_path):
         with open(baseline_path) as f:
             baseline = json.load(f)
+    if not baseline:
+        baseline = STEP1_BASELINE_FALLBACK
 
     lines = [
         '# Lattice Step 2 — Normalization, Invariance, and Capacity Sweep',

@@ -5,6 +5,7 @@ import json
 
 import jax
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from flax.training.train_state import TrainState
 
@@ -124,16 +125,18 @@ def run_full_evaluation(
 
     # 3. Training curves
     print("Generating plots...")
-    plot_training_curves(
+    fig = plot_training_curves(
         history,
         save_path=os.path.join(results_dir, 'training_curves.png'),
     )
+    plt.close(fig)
 
     # 4. Reconstruction examples
-    plot_reconstructions(
+    fig = plot_reconstructions(
         state, test_ds, n_examples=8, is_vae=is_vae,
         save_path=os.path.join(results_dir, 'reconstructions.png'),
     )
+    plt.close(fig)
 
     if data_type == 'lattice':
         # --- Lattice-specific evaluation ---
@@ -143,23 +146,26 @@ def run_full_evaluation(
     else:
         # --- Torus-specific evaluation ---
         # 5. Latent scatter
-        plot_latent_scatter(
+        fig = plot_latent_scatter(
             state, train_ds, config, is_vae=is_vae,
             save_path=os.path.join(results_dir, 'latent_scatter.png'),
         )
+        plt.close(fig)
 
         # 6. Latent interpolation
-        plot_latent_interpolation(
+        fig = plot_latent_interpolation(
             state, config, n_points=config.eval.n_interpolation, is_vae=is_vae,
             save_path=os.path.join(results_dir, 'interpolation.png'),
         )
+        plt.close(fig)
 
         # 7. Periodicity check plot (T^1)
         if config.data.torus_dim == 1:
-            plot_periodicity_check(
+            fig = plot_periodicity_check(
                 state, config, is_vae=is_vae,
                 save_path=os.path.join(results_dir, 'periodicity_check.png'),
             )
+            plt.close(fig)
 
     # 8. PCA analysis (useful for higher-dim latent)
     z_np = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
@@ -198,10 +204,11 @@ def _run_lattice_evaluation(
     """
     # 5. Lattice latent scatter (with τ coloring and fundamental domain)
     print("  Generating lattice scatter plots...")
-    plot_lattice_latent_scatter(
+    fig = plot_lattice_latent_scatter(
         state, train_ds, config, is_vae=is_vae,
         save_path=os.path.join(results_dir, 'lattice_latent_scatter.png'),
     )
+    plt.close(fig)
 
     # 6. j-invariant correlation
     if train_ds.j_invariant is not None:
@@ -211,10 +218,11 @@ def _run_lattice_evaluation(
         summary['j_correlation'] = j_corr
         print(f"  j-invariant max |corr|: {j_corr['max_abs_correlation']:.4f}")
 
-        plot_j_invariant_correlation(
+        fig = plot_j_invariant_correlation(
             z, train_ds.j_invariant,
             save_path=os.path.join(results_dir, 'j_invariant_correlation.png'),
         )
+        plt.close(fig)
 
     # 7. SL₂(Z) modular invariance check
     print("  Checking modular invariance...")
