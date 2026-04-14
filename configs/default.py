@@ -1,0 +1,56 @@
+"""Default configuration for torus autoencoder experiments."""
+
+import ml_collections
+
+
+def get_config() -> ml_collections.ConfigDict:
+    config = ml_collections.ConfigDict()
+
+    config.seed = 42
+
+    # --- Data ---
+    config.data = ml_collections.ConfigDict()
+    config.data.torus_dim = 1          # 1 for T^1, 2 for T^2
+    config.data.signal_length = 100    # number of time steps
+    config.data.n_train = 2000
+    config.data.n_val = 500
+    config.data.n_test = 500
+    config.data.omega = 2.0            # angular frequency for T^1
+    config.data.omega1 = 2.0           # first frequency for T^2
+    config.data.omega2 = 3.0           # second frequency for T^2
+    config.data.a1 = 1.0              # amplitude for first component (T^2)
+    config.data.a2 = 0.5              # amplitude for second component (T^2)
+    config.data.noise_std = 0.0        # additive Gaussian noise std
+    config.data.dt = 0.1              # time step spacing
+
+    # --- Model ---
+    config.model = ml_collections.ConfigDict()
+    config.model.latent_type = 'standard'  # 'standard' | 'torus' | 'vae'
+    config.model.latent_dim = 2            # R^d dim for standard; n_angles for torus
+    config.model.encoder_hidden = (256, 128, 64)
+    config.model.decoder_hidden = (64, 128, 256)
+    config.model.activation = 'relu'       # 'relu' | 'tanh' | 'gelu'
+    config.model.vae_beta = 1.0            # KL weight for VAE
+
+    # --- Training ---
+    config.train = ml_collections.ConfigDict()
+    config.train.batch_size = 128
+    config.train.num_epochs = 200
+    config.train.learning_rate = 1e-3
+    config.train.weight_decay = 0.0
+    config.train.lr_schedule = 'constant'  # 'constant' | 'cosine'
+    config.train.patience = 20             # early stopping patience
+    config.train.log_every = 10            # log metrics every N epochs
+
+    # --- Checkpoint ---
+    config.checkpoint = ml_collections.ConfigDict()
+    config.checkpoint.dir = 'checkpoints/'
+    config.checkpoint.max_to_keep = 3
+
+    # --- Evaluation ---
+    config.eval = ml_collections.ConfigDict()
+    config.eval.output_dir = 'results/'
+    config.eval.n_interpolation = 50
+    config.eval.use_umap = False
+
+    return config

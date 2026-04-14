@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ae-latent-study"
+version = "0.1.0"
+description = "Torus-structured latent space study with JAX/Flax autoencoders"
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4.20",
+    "flax>=0.8.0",
+    "optax>=0.1.7",
+    "orbax-checkpoint>=0.5.0",
+    "ml-collections",
+    "numpy",
+    "matplotlib",
+    "scikit-learn",
+    "absl-py",
+]
+
+[project.optional-dependencies]
+umap = ["umap-learn"]
+
+[tool.setuptools.packages.find]
+include = ["configs*", "data*", "models*", "train*", "eval*"]

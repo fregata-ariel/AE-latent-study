@@ -1,0 +1,9 @@
+jax>=0.4.20
+flax>=0.8.0
+optax>=0.1.7
+orbax-checkpoint>=0.5.0
+ml-collections
+numpy
+matplotlib
+scikit-learn
+absl-py
