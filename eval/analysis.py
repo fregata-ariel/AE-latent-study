@@ -100,7 +100,10 @@ def run_full_evaluation(
 
     # 1. Reconstruction error
     print("Computing reconstruction error...")
-    recon_metrics = compute_reconstruction_error(state, test_ds, is_vae=is_vae)
+    recon_batch_size = min(512, len(test_ds)) if len(test_ds) > 0 else 512
+    recon_metrics = compute_reconstruction_error(
+        state, test_ds, batch_size=recon_batch_size, is_vae=is_vae,
+    )
     summary['reconstruction'] = recon_metrics
     print(f"  Test MSE: {recon_metrics['mse']:.6f}, MAE: {recon_metrics['mae']:.6f}")
 
