@@ -19,47 +19,47 @@
 
 | Experiment | MSE | max Spearman vs log10_abs_j | max MI vs log10_abs_j | SL₂(Z) mean dist | trust | overlap | eff_dim | PCA EVR |
 |---|---|---|---|---|---|---|---|---|
-| lattice_standard_norm | 2.73822e-07 | 0.9835 | 3.9800 | 0.0829 | 0.8505 | 0.0477 | 1.0013 | 1.000, 0.000 |
-| lattice_halfplane_norm | 6.11513e-07 | 0.9831 | 4.0307 | 0.0969 | 0.8398 | 0.0387 | 1.0000 | 0.997, 0.003 |
-| lattice_standard_wide_norm | 1.30654e-06 | 0.8881 | 2.7555 | 0.1457 | 0.8803 | 0.0480 | 1.0219 | 0.989, 0.011 |
+| lattice_standard_norm | 2.89401e-07 | 0.9834 | 3.9925 | 0.0944 | 0.8508 | 0.0483 | 1.0015 | 1.000, 0.000 |
+| lattice_halfplane_norm | 6.10116e-07 | 0.9830 | 4.0311 | 0.0930 | 0.8403 | 0.0386 | 1.0000 | 0.995, 0.005 |
+| lattice_standard_wide_norm | 1.2288e-06 | 0.8869 | 2.7423 | 0.1537 | 0.8831 | 0.0489 | 1.0246 | 0.987, 0.013 |
 
-- Best run: `lattice_standard_norm`
-- Reason: modular mean distance = 0.0829, log10|j| Spearman = 0.9835, MSE = 2.73822e-07
+- Best run: `lattice_halfplane_norm`
+- Reason: modular mean distance = 0.0930, log10|j| Spearman = 0.9830, MSE = 6.10116e-07
 - Orbit-gluing view: smaller modular mean distance is better.
-- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. (best run here: trust = 0.8505, overlap = 0.0477, eff_dim = 1.0013)
+- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. (best run here: trust = 0.8403, overlap = 0.0386, eff_dim = 1.0000)
 
 ## Phase 2
 
 | Experiment | MSE | max Spearman vs log10_abs_j | max MI vs log10_abs_j | SL₂(Z) mean dist | trust | overlap | eff_dim | PCA EVR |
 |---|---|---|---|---|---|---|---|---|
-| lattice_standard_norm_inv | 1.12377e-07 | 0.9879 | 4.1715 | 0.0004 | 0.8528 | 0.0570 | 1.0438 | 0.979, 0.021 |
-| lattice_standard_wide_norm_inv | 1.70056e-06 | 0.7322 | 2.8229 | 0.0044 | 0.8820 | 0.0462 | 1.2332 | 0.897, 0.103 |
+| lattice_standard_norm_inv | 4.18319e-07 | 0.9825 | 4.1880 | 0.0010 | 0.8519 | 0.0504 | 1.0029 | 0.998, 0.002 |
+| lattice_standard_wide_norm_inv | 1.30117e-06 | 0.7548 | 2.6745 | 0.0042 | 0.8792 | 0.0470 | 1.3264 | 0.858, 0.142 |
 
 - Best run: `lattice_standard_norm_inv`
-- Reason: modular mean distance = 0.0004, log10|j| Spearman = 0.9879, MSE = 1.12377e-07
+- Reason: modular mean distance = 0.0010, log10|j| Spearman = 0.9825, MSE = 4.18319e-07
 - Orbit-gluing view: smaller modular mean distance is better.
-- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. (best run here: trust = 0.8528, overlap = 0.0570, eff_dim = 1.0438)
+- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. (best run here: trust = 0.8519, overlap = 0.0504, eff_dim = 1.0029)
 
 ## Phase 3
 
 | Experiment | MSE | max Spearman vs log10_abs_j | max MI vs log10_abs_j | SL₂(Z) mean dist | trust | overlap | eff_dim | PCA EVR |
 |---|---|---|---|---|---|---|---|---|
-| lattice_standard_norm_latent4 | 4.62227e-07 | 0.9871 | 4.0545 | 0.2500 | 0.8513 | 0.0481 | 1.0022 | 1.000, 0.000 |
-| lattice_standard_norm_latent8 | 4.8303e-07 | 0.9895 | 4.2734 | 0.2489 | 0.8515 | 0.0489 | 1.0025 | 1.000, 0.000 |
-| lattice_vae_norm_beta001 | 8.08377e-05 | 0.4673 | 4.4144 | 0.0072 | 0.8545 | 0.0575 | 1.3867 | 0.831, 0.153 |
+| lattice_standard_norm_latent4 | 4.64934e-07 | 0.9871 | 4.0687 | 0.2500 | 0.8516 | 0.0482 | 1.0022 | 0.999, 0.001 |
+| lattice_standard_norm_latent8 | 2.88902e-08 | 0.9905 | 4.3985 | 0.1925 | 0.8522 | 0.0550 | 1.0160 | 0.992, 0.008 |
+| lattice_vae_norm_beta001 | 8.09567e-05 | 0.6280 | 4.4373 | 0.0074 | 0.8549 | 0.0577 | 1.8271 | 0.668, 0.319 |
 
 - Best run: `lattice_vae_norm_beta001`
-- Reason: modular mean distance = 0.0072, log10|j| Spearman = 0.4673, MSE = 8.08377e-05
+- Reason: modular mean distance = 0.0074, log10|j| Spearman = 0.6280, MSE = 8.09567e-05
 - Orbit-gluing view: smaller modular mean distance is better.
-- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. (best run here: trust = 0.8545, overlap = 0.0575, eff_dim = 1.3867)
+- 2D chart view: higher trust/overlap and effective dimension closer to 2 are better. (best run here: trust = 0.8549, overlap = 0.0577, eff_dim = 1.8271)
 
 ## Adopted Run
 
 - Selected run: `lattice_standard_norm_inv`
-- Modular mean distance: 0.0004
-- max Spearman vs log10|j|: 0.9879
-- Quotient-chart trust / overlap / eff_dim: 0.8528 / 0.0570 / 1.0438
-- Reconstruction MSE: 1.12377e-07
+- Modular mean distance: 0.0010
+- max Spearman vs log10|j|: 0.9825
+- Quotient-chart trust / overlap / eff_dim: 0.8519 / 0.0504 / 1.0029
+- Reconstruction MSE: 4.18319e-07
 
 ## Open Issues
 

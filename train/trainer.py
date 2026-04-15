@@ -18,6 +18,7 @@ from train.train_state import create_train_state
 from train.train_step import (
     train_step_ae, eval_step_ae, eval_step_vae, _make_train_step_vae,
     _make_train_step_lattice_invariant, _make_eval_step_lattice_invariant,
+    _make_train_step_lattice_invariant_vae, _make_eval_step_lattice_invariant_vae,
 )
 from train.checkpointing import create_checkpoint_manager, save_checkpoint
 
@@ -46,11 +47,17 @@ def _evaluate(
     """Run evaluation on a full dataset."""
     metrics_list = []
     use_invariance = _should_use_lattice_invariance(config)
-    eval_fn = (
-        _make_eval_step_lattice_invariant(config.train.modular_invariance_weight)
-        if use_invariance else
-        (eval_step_vae if is_vae else eval_step_ae)
-    )
+    if use_invariance and is_vae:
+        eval_fn = _make_eval_step_lattice_invariant_vae(
+            config.model.vae_beta,
+            config.train.modular_invariance_weight,
+        )
+    elif use_invariance:
+        eval_fn = _make_eval_step_lattice_invariant(
+            config.train.modular_invariance_weight,
+        )
+    else:
+        eval_fn = eval_step_vae if is_vae else eval_step_ae
 
     for batch_signals, batch_thetas in _iter_eval_batches(dataset, batch_size, key):
         if use_invariance:
@@ -72,7 +79,7 @@ def _should_use_lattice_invariance(
     return (
         getattr(config.data, 'data_type', 'torus') == 'lattice'
         and getattr(config.train, 'modular_invariance_weight', 0.0) > 0.0
-        and config.model.latent_type == 'standard'
+        and config.model.latent_type in ('standard', 'vae')
     )
 
 
@@ -161,13 +168,18 @@ def train_and_evaluate(
         raise ValueError('modular_invariance_weight is only supported for lattice data.')
     if (
         getattr(config.train, 'modular_invariance_weight', 0.0) > 0.0
-        and config.model.latent_type != 'standard'
+        and config.model.latent_type not in ('standard', 'vae')
     ):
         raise ValueError(
-            'modular_invariance_weight is only supported for standard lattice AEs.'
+            'modular_invariance_weight is only supported for standard lattice AEs and lattice VAEs.'
         )
 
-    if is_vae:
+    if is_vae and use_invariance:
+        train_step_fn = _make_train_step_lattice_invariant_vae(
+            config.model.vae_beta,
+            config.train.modular_invariance_weight,
+        )
+    elif is_vae:
         train_step_fn = _make_train_step_vae(config.model.vae_beta)
     elif use_invariance:
         train_step_fn = _make_train_step_lattice_invariant(

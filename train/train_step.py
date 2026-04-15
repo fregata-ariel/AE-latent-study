@@ -95,6 +95,39 @@ def _make_train_step_vae(beta: float):
     return train_step_vae
 
 
+def _make_train_step_lattice_invariant_vae(beta: float, weight: float):
+    """Create a JIT-compiled lattice VAE training step with invariance loss."""
+
+    @jax.jit
+    def train_step_vae_lattice_invariant(
+        state: VAETrainState,
+        batch: jnp.ndarray,
+        paired_batch: jnp.ndarray,
+    ) -> tuple[VAETrainState, dict[str, jnp.ndarray]]:
+        rng, step_rng = jax.random.split(state.rng)
+
+        def loss_fn(params):
+            x_hat, _, mean, logvar = state.apply_fn(
+                {'params': params}, batch, step_rng,
+            )
+            _, _, mean_pair, _ = state.apply_fn(
+                {'params': params}, paired_batch, step_rng, deterministic=True,
+            )
+            mse = jnp.mean((batch - x_hat) ** 2)
+            kl = jnp.mean(VAE.kl_divergence(mean, logvar))
+            inv_loss = jnp.mean(jnp.sum((mean - mean_pair) ** 2, axis=-1))
+            loss = mse + beta * kl + weight * inv_loss
+            return loss, {'loss': loss, 'mse': mse, 'kl': kl, 'inv_loss': inv_loss}
+
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        (_, metrics), grads = grad_fn(state.params)
+        state = state.apply_gradients(grads=grads)
+        state = state.replace(rng=rng)
+        return state, metrics
+
+    return train_step_vae_lattice_invariant
+
+
 def _make_eval_step_lattice_invariant(weight: float):
     """Create a JIT-compiled lattice AE eval step with invariance loss."""
 
@@ -112,6 +145,30 @@ def _make_eval_step_lattice_invariant(weight: float):
         return {'mse': mse, 'loss': loss, 'inv_loss': inv_loss}, z
 
     return eval_step_lattice_invariant
+
+
+def _make_eval_step_lattice_invariant_vae(beta: float, weight: float):
+    """Create a JIT-compiled lattice VAE eval step with invariance loss."""
+
+    @jax.jit
+    def eval_step_lattice_invariant_vae(
+        state: VAETrainState,
+        batch: jnp.ndarray,
+        paired_batch: jnp.ndarray,
+    ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
+        x_hat, z, mean, logvar = state.apply_fn(
+            {'params': state.params}, batch, state.rng, deterministic=True,
+        )
+        _, _, mean_pair, _ = state.apply_fn(
+            {'params': state.params}, paired_batch, state.rng, deterministic=True,
+        )
+        mse = jnp.mean((batch - x_hat) ** 2)
+        kl = jnp.mean(VAE.kl_divergence(mean, logvar))
+        inv_loss = jnp.mean(jnp.sum((mean - mean_pair) ** 2, axis=-1))
+        loss = mse + beta * kl + weight * inv_loss
+        return {'mse': mse, 'loss': loss, 'kl': kl, 'inv_loss': inv_loss}, z
+
+    return eval_step_lattice_invariant_vae
 
 
 @jax.jit
