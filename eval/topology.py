@@ -162,26 +162,44 @@ def compute_local_intrinsic_dimension(
     pts = np.asarray(points, dtype=float)
     n_samples = pts.shape[0]
     if n_samples <= 2:
-        return {'median': 0.0, 'iqr': 0.0, 'mean': 0.0}
+        return {'median': 0.0, 'iqr': 0.0, 'mean': 0.0, 'valid_fraction': 0.0}
 
     k = max(3, min(n_neighbors, n_samples - 1))
     nbrs = NearestNeighbors(n_neighbors=k + 1)
     nbrs.fit(pts)
     distances = nbrs.kneighbors(return_distance=True)[0][:, 1:]
 
-    tail = np.maximum(distances[:, -1], 1e-12)
-    body = np.maximum(distances[:, :-1], 1e-12)
-    denom = np.mean(np.log(tail[:, None] / body), axis=1)
-    lid = np.where(denom > 1e-12, 1.0 / denom, 0.0)
-    lid = lid[np.isfinite(lid)]
+    lid_values = []
+    for row in distances:
+        positive = np.asarray(row[row > 1e-8], dtype=float)
+        if positive.size < 4:
+            continue
+
+        tail = positive[-1]
+        body = positive[:-1]
+        if body.size < 3:
+            continue
+
+        log_ratios = np.log(tail / body)
+        denom = float(np.mean(log_ratios))
+        if denom <= 1e-12 or not np.isfinite(denom):
+            continue
+
+        lid = 1.0 / denom
+        if np.isfinite(lid):
+            lid_values.append(lid)
+
+    lid = np.asarray(lid_values, dtype=float)
+    valid_fraction = float(lid.size / n_samples)
     if lid.size == 0:
-        return {'median': 0.0, 'iqr': 0.0, 'mean': 0.0}
+        return {'median': 0.0, 'iqr': 0.0, 'mean': 0.0, 'valid_fraction': 0.0}
 
     q25, q75 = np.percentile(lid, [25, 75])
     return {
         'median': float(np.median(lid)),
         'iqr': float(q75 - q25),
         'mean': float(np.mean(lid)),
+        'valid_fraction': valid_fraction,
     }
 
 
@@ -232,16 +250,57 @@ def _compute_diagram_distance_metrics(
     return metrics
 
 
+def _compute_partner_preservation_metrics(
+    latent_coords: np.ndarray,
+    partner_latent: np.ndarray,
+    n_neighbors: int,
+) -> dict[str, float]:
+    """Measure how well each point keeps its modular partner nearby."""
+    z = np.asarray(latent_coords, dtype=float)
+    partner = np.asarray(partner_latent, dtype=float)
+    n_samples = z.shape[0]
+    if n_samples <= 1:
+        return {
+            'partner_rank_percentile_mean': 1.0,
+            'partner_rank_percentile_std': 0.0,
+            'partner_knn_hit_rate': 0.0,
+        }
+
+    dists = np.linalg.norm(z[:, None, :] - z[None, :, :], axis=-1)
+    np.fill_diagonal(dists, np.inf)
+    partner_dists = np.linalg.norm(z - partner, axis=-1)
+
+    closer_counts = np.sum(dists < partner_dists[:, None], axis=1)
+    partner_rank_percentiles = closer_counts / max(n_samples - 1, 1)
+
+    k_neighbors = max(1, min(n_neighbors, n_samples - 1))
+    kth_neighbor = np.partition(dists, kth=k_neighbors - 1, axis=1)[:, k_neighbors - 1]
+    partner_hits = partner_dists <= kth_neighbor
+
+    return {
+        'partner_rank_percentile_mean': float(np.mean(partner_rank_percentiles)),
+        'partner_rank_percentile_std': float(np.std(partner_rank_percentiles)),
+        'partner_knn_hit_rate': float(np.mean(partner_hits)),
+    }
+
+
 def _summarize_diagrams(
     diagrams: list[np.ndarray],
     noise_floor: float,
+    noise_floor_mode: str = 'absolute',
 ) -> dict[str, float]:
     """Summarize H0/H1 persistence diagrams into scalar diagnostics."""
     summary = {}
     for dim in (0, 1):
         lengths = _finite_bar_lengths(diagrams[dim]) if dim < len(diagrams) else np.zeros(0)
-        summary[f'h{dim}_longest_bar'] = float(np.max(lengths)) if lengths.size else 0.0
-        summary[f'h{dim}_bar_count'] = int(np.sum(lengths > noise_floor))
+        longest = float(np.max(lengths)) if lengths.size else 0.0
+        if noise_floor_mode == 'relative':
+            noise_floor_value = noise_floor * longest
+        else:
+            noise_floor_value = noise_floor
+        summary[f'h{dim}_longest_bar'] = longest
+        summary[f'noise_floor_value_h{dim}'] = float(noise_floor_value)
+        summary[f'h{dim}_bar_count'] = int(np.sum(lengths > noise_floor_value))
         if dim == 1:
             summary['h1_total_persistence'] = float(np.sum(lengths))
     if 'h1_total_persistence' not in summary:
@@ -267,6 +326,7 @@ def _evaluate_projection_metrics(
     n_neighbors: int,
     lid_neighbors: int,
     noise_floor: float,
+    noise_floor_mode: str,
     maxdim: int,
     j_values=None,
     projected_partner_latent: np.ndarray | None = None,
@@ -285,6 +345,7 @@ def _evaluate_projection_metrics(
     metrics['lid_median'] = lid_stats['median']
     metrics['lid_iqr'] = lid_stats['iqr']
     metrics['lid_mean'] = lid_stats['mean']
+    metrics['lid_valid_fraction'] = lid_stats['valid_fraction']
 
     if n_samples > k_neighbors + 1:
         metrics['trustworthiness'] = float(
@@ -312,11 +373,15 @@ def _evaluate_projection_metrics(
         partner = np.asarray(projected_partner_latent, dtype=float)
         dists = np.sqrt(np.sum((z_proj - partner) ** 2, axis=-1))
         metrics['projected_modular_distance'] = float(np.mean(dists))
+        metrics.update(_compute_partner_preservation_metrics(z_proj, partner, k_neighbors))
     else:
         metrics['projected_modular_distance'] = None
+        metrics['partner_rank_percentile_mean'] = None
+        metrics['partner_rank_percentile_std'] = None
+        metrics['partner_knn_hit_rate'] = None
 
     diagrams = _compute_persistence_diagrams(z_proj, maxdim=maxdim)
-    metrics.update(_summarize_diagrams(diagrams, noise_floor))
+    metrics.update(_summarize_diagrams(diagrams, noise_floor, noise_floor_mode=noise_floor_mode))
     metrics['diagram_distance_to_prev'] = _compute_diagram_distance_metrics(
         previous_diagrams, diagrams,
     )
@@ -387,6 +452,7 @@ def diagnose_projection_ladder(
     maxdim: int = 1,
     max_samples: int = 2000,
     noise_floor: float = 0.05,
+    noise_floor_mode: str = 'relative',
     random_projection_trials: int = 8,
     j_values=None,
     partner_latent: np.ndarray | None = None,
@@ -434,6 +500,7 @@ def diagnose_projection_ladder(
             n_neighbors=n_neighbors,
             lid_neighbors=lid_neighbors,
             noise_floor=noise_floor,
+            noise_floor_mode=noise_floor_mode,
             maxdim=maxdim,
             j_values=j_subset,
             projected_partner_latent=partner_proj,
@@ -453,6 +520,7 @@ def diagnose_projection_ladder(
                 n_neighbors=n_neighbors,
                 lid_neighbors=lid_neighbors,
                 noise_floor=noise_floor,
+                noise_floor_mode=noise_floor_mode,
                 maxdim=maxdim,
                 j_values=j_subset,
                 projected_partner_latent=partner_rand,
@@ -484,7 +552,8 @@ def plot_topology_metrics_vs_k(
     h1_total = [diagnostics_summary['dims'][key]['h1_total_persistence'] for key in dim_keys]
     h1_long = [diagnostics_summary['dims'][key]['h1_longest_bar'] for key in dim_keys]
     spearman = [diagnostics_summary['dims'][key]['max_abs_logabsj_spearman'] for key in dim_keys]
-    moddist = [diagnostics_summary['dims'][key]['projected_modular_distance'] for key in dim_keys]
+    partner_rank = [diagnostics_summary['dims'][key]['partner_rank_percentile_mean'] for key in dim_keys]
+    partner_hit = [diagnostics_summary['dims'][key]['partner_knn_hit_rate'] for key in dim_keys]
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
 
@@ -516,9 +585,12 @@ def plot_topology_metrics_vs_k(
     if any(value is not None for value in spearman):
         ax.plot(dims, [0.0 if value is None else value for value in spearman],
                 marker='o', label='max log|j| Spearman')
-    if any(value is not None for value in moddist):
-        ax.plot(dims, [0.0 if value is None else value for value in moddist],
-                marker='o', label='projected modular distance')
+    if any(value is not None for value in partner_hit):
+        ax.plot(dims, [0.0 if value is None else value for value in partner_hit],
+                marker='o', label='partner kNN hit rate')
+    if any(value is not None for value in partner_rank):
+        ax.plot(dims, [0.0 if value is None else 1.0 - value for value in partner_rank],
+                marker='o', label='1 - partner rank percentile')
     if not ax.lines:
         ax.plot(dims, eff, marker='o', label='effective dim')
     ax.set_title('Target observables')
@@ -587,6 +659,11 @@ def plot_projection_comparison(
     ]
 
     if any(
+        diagnostics_summary['dims'][key]['partner_knn_hit_rate'] is not None
+        for key in dim_keys
+    ):
+        panel_specs[-1] = ('partner_knn_hit_rate', 'Partner kNN hit rate')
+    elif any(
         diagnostics_summary['dims'][key]['max_abs_logabsj_spearman'] is not None
         for key in dim_keys
     ):

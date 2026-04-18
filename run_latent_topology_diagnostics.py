@@ -117,6 +117,7 @@ def _ensure_topology_defaults(config) -> None:
         'ph_random_projection_trials': 8,
         'ph_knn_for_lid': 10,
         'ph_noise_floor': 0.05,
+        'ph_noise_floor_mode': 'relative',
         'chart_n_neighbors': 8,
         'output_dir': 'results/',
     }
@@ -234,6 +235,7 @@ def _run_topology_for_experiment(
         maxdim=getattr(config.eval, 'ph_maxdim', 1),
         max_samples=0,
         noise_floor=getattr(config.eval, 'ph_noise_floor', 0.05),
+        noise_floor_mode=getattr(config.eval, 'ph_noise_floor_mode', 'relative'),
         random_projection_trials=getattr(config.eval, 'ph_random_projection_trials', 8),
         j_values=j_subset,
         partner_latent=partner_subset,
@@ -279,22 +281,43 @@ def _dim_metrics(run_summary: dict, dim: int) -> dict:
     return run_summary['topology_diagnostics']['dims'].get(str(dim), {})
 
 
-def _control_calibrated(control_summary: dict) -> bool:
-    """Whether the primary T^2 control exhibits a stable 2D regime."""
-    dim4 = _dim_metrics(control_summary, 4)
+def _fmt_metric(value, precision: int = 4) -> str:
+    """Format a scalar metric for reports."""
+    if value is None:
+        return 'n/a'
+    if isinstance(value, (float, int, np.floating, np.integer)):
+        return f'{float(value):.{precision}f}'
+    return str(value)
+
+
+def _control_calibrated(run_name: str, control_summary: dict) -> tuple[bool, str]:
+    """Whether one control run shows the expected 2D-stable / 1D-collapse pattern."""
     dim2 = _dim_metrics(control_summary, 2)
     dim1 = _dim_metrics(control_summary, 1)
-    if not dim4 or not dim2 or not dim1:
-        return False
+    if not dim2 or not dim1:
+        return False, f'`{run_name}` is missing k=2 or k=1 diagnostics.'
 
-    trust_ok = dim2.get('trustworthiness', 0.0) >= 0.85 * dim4.get('trustworthiness', 0.0)
-    overlap_ok = dim2.get('knn_jaccard_mean', 0.0) >= 0.75 * dim4.get('knn_jaccard_mean', 0.0)
-    collapse_to_one = (
-        dim1.get('trustworthiness', 0.0) <= dim2.get('trustworthiness', 0.0) - 0.05
-        or dim1.get('knn_jaccard_mean', 0.0) <= 0.75 * dim2.get('knn_jaccard_mean', 0.0)
-        or dim1.get('h1_total_persistence', 0.0) <= 0.8 * dim2.get('h1_total_persistence', 0.0)
+    conditions = {
+        'eff_dim': 1.7 <= dim2.get('effective_dimension', 0.0) <= 2.3,
+        'trust_k2': dim2.get('trustworthiness', 0.0) >= 0.85,
+        'trust_gap': (
+            dim2.get('trustworthiness', 0.0) - dim1.get('trustworthiness', 0.0)
+        ) >= 0.15,
+        'overlap_gap': (
+            dim2.get('knn_jaccard_mean', 0.0) - dim1.get('knn_jaccard_mean', 0.0)
+        ) >= 0.08,
+        'h1_collapse': dim1.get('h1_total_persistence', 0.0) <= 0.1 * max(
+            dim2.get('h1_total_persistence', 0.0), 1e-8,
+        ),
+    }
+    evidence = (
+        f"`{run_name}`: eff2={_fmt_metric(dim2.get('effective_dimension'))}, "
+        f"trust2={_fmt_metric(dim2.get('trustworthiness'))}, "
+        f"trust drop={_fmt_metric(dim2.get('trustworthiness', 0.0) - dim1.get('trustworthiness', 0.0))}, "
+        f"overlap drop={_fmt_metric(dim2.get('knn_jaccard_mean', 0.0) - dim1.get('knn_jaccard_mean', 0.0))}, "
+        f"H1(1)/H1(2)={_fmt_metric(dim1.get('h1_total_persistence', 0.0) / max(dim2.get('h1_total_persistence', 0.0), 1e-8))}"
     )
-    return trust_ok and overlap_ok and collapse_to_one
+    return all(conditions.values()), evidence
 
 
 def _stable_to_two(run_summary: dict) -> bool:
@@ -306,7 +329,8 @@ def _stable_to_two(run_summary: dict) -> bool:
     if dim2 is None:
         return False
 
-    trust_ok = dim2.get('trustworthiness', 0.0) >= dim_full.get('trustworthiness', 0.0) - 0.05
+    eff_ok = 1.4 <= dim2.get('effective_dimension', 0.0) <= 2.4
+    trust_ok = dim2.get('trustworthiness', 0.0) >= dim_full.get('trustworthiness', 0.0) - 0.03
     overlap_ok = dim2.get('knn_jaccard_mean', 0.0) >= 0.8 * dim_full.get('knn_jaccard_mean', 0.0)
 
     spearman_full = dim_full.get('max_abs_logabsj_spearman', None)
@@ -316,14 +340,21 @@ def _stable_to_two(run_summary: dict) -> bool:
     else:
         spearman_ok = spearman_2 >= 0.8 * spearman_full
 
-    mod_full = dim_full.get('projected_modular_distance', None)
-    mod_2 = dim2.get('projected_modular_distance', None)
-    if mod_full is None or mod_2 is None:
-        modular_ok = True
+    rank_full = dim_full.get('partner_rank_percentile_mean', None)
+    rank_2 = dim2.get('partner_rank_percentile_mean', None)
+    if rank_full is None or rank_2 is None:
+        rank_ok = True
     else:
-        modular_ok = mod_2 <= max(3.0 * mod_full, 1e-8)
+        rank_ok = rank_2 <= rank_full + 0.05
 
-    return trust_ok and overlap_ok and spearman_ok and modular_ok
+    hit_full = dim_full.get('partner_knn_hit_rate', None)
+    hit_2 = dim2.get('partner_knn_hit_rate', None)
+    if hit_full is None or hit_2 is None:
+        hit_ok = True
+    else:
+        hit_ok = hit_2 >= 0.8 * hit_full
+
+    return eff_ok and trust_ok and overlap_ok and spearman_ok and rank_ok and hit_ok
 
 
 def _collapse_to_one(run_summary: dict) -> bool:
@@ -333,16 +364,23 @@ def _collapse_to_one(run_summary: dict) -> bool:
     if not dim2 or not dim1:
         return False
 
-    return (
-        dim1.get('trustworthiness', 0.0) <= dim2.get('trustworthiness', 0.0) - 0.05
-        or dim1.get('knn_jaccard_mean', 0.0) <= 0.7 * dim2.get('knn_jaccard_mean', 0.0)
-        or dim1.get('h1_total_persistence', 0.0) <= 0.5 * dim2.get('h1_total_persistence', 0.0)
-        or (
-            dim1.get('projected_modular_distance') is not None
-            and dim2.get('projected_modular_distance') is not None
-            and dim1.get('projected_modular_distance', 0.0) >= 3.0 * dim2.get('projected_modular_distance', 0.0)
-        )
-    )
+    conditions = [
+        dim1.get('trustworthiness', 0.0) <= dim2.get('trustworthiness', 0.0) - 0.05,
+        dim1.get('knn_jaccard_mean', 0.0) <= 0.75 * dim2.get('knn_jaccard_mean', 0.0),
+        dim1.get('h1_total_persistence', 0.0) <= 0.1 * max(dim2.get('h1_total_persistence', 0.0), 1e-8),
+    ]
+
+    spearman_2 = dim2.get('max_abs_logabsj_spearman', None)
+    spearman_1 = dim1.get('max_abs_logabsj_spearman', None)
+    if spearman_2 is not None and spearman_1 is not None:
+        conditions.append(spearman_1 <= 0.5 * spearman_2)
+
+    rank_2 = dim2.get('partner_rank_percentile_mean', None)
+    rank_1 = dim1.get('partner_rank_percentile_mean', None)
+    if rank_2 is not None and rank_1 is not None:
+        conditions.append(rank_1 >= rank_2 + 0.10)
+
+    return sum(bool(condition) for condition in conditions) >= 2
 
 
 def _projection_artifact(run_summary: dict) -> bool:
@@ -356,36 +394,48 @@ def _projection_artifact(run_summary: dict) -> bool:
 
     pca_h1 = dim2.get('h1_total_persistence', 0.0)
     full_h1 = dim_full.get('h1_total_persistence', 0.0)
-    baseline = dim2.get('random_projection_baseline', {}).get('h1_total_persistence', {})
-    random_h1 = baseline.get('mean', 0.0)
-    trust_bad = dim2.get('trustworthiness', 0.0) <= dim_full.get('trustworthiness', 0.0) - 0.05
-    overlap_bad = dim2.get('knn_jaccard_mean', 0.0) <= 0.8 * dim_full.get('knn_jaccard_mean', 0.0)
+    if pca_h1 < 1.5 * max(full_h1, 1e-8):
+        return False
 
-    return (
-        pca_h1 >= 1.5 * max(full_h1, 1e-8)
-        and random_h1 >= 0.8 * pca_h1
-        and (trust_bad or overlap_bad)
+    baseline = dim2.get('random_projection_baseline', {})
+    overlap_baseline = baseline.get('knn_jaccard_mean', {'mean': -np.inf, 'std': 0.0})
+    hit_baseline = baseline.get('partner_knn_hit_rate', {'mean': -np.inf, 'std': 0.0})
+    spearman_baseline = baseline.get('max_abs_logabsj_spearman', {'mean': -np.inf, 'std': 0.0})
+
+    overlap_not_better = dim2.get('knn_jaccard_mean', 0.0) <= (
+        overlap_baseline['mean'] + overlap_baseline['std']
     )
+    hit_not_better = dim2.get('partner_knn_hit_rate', 0.0) <= (
+        hit_baseline['mean'] + hit_baseline['std']
+    )
+    spearman_not_better = dim2.get('max_abs_logabsj_spearman', 0.0) <= (
+        spearman_baseline['mean'] + spearman_baseline['std']
+    )
+
+    return overlap_not_better and hit_not_better and spearman_not_better
 
 
 def classify_branch(topology_runs: dict[str, dict]) -> dict:
     """Classify the current research branch from control and lattice diagnostics."""
-    control = topology_runs.get('t2_standard')
+    control_standard = topology_runs.get('t2_standard')
+    control_torus = topology_runs.get('t2_torus')
     lattice_b010 = topology_runs.get('lattice_vae_norm_inv_b010_l100')
     lattice_b030 = topology_runs.get('lattice_vae_norm_inv_b030_l100')
     wide = topology_runs.get('lattice_vae_wide_norm_inv_b003_l030')
 
     evidence = []
-    if control is None:
+    if control_standard is None or control_torus is None:
         return {
             'branch': 'C',
-            'summary': 'Missing T^2 control diagnostics, so calibration is incomplete.',
+            'summary': 'Missing one of the pure-torus control diagnostics, so calibration is incomplete.',
             'recommended_next_step': 'Run the control diagnostics before interpreting lattice geometry.',
             'evidence': evidence,
         }
 
-    control_ok = _control_calibrated(control)
-    if not control_ok:
+    control_standard_ok, standard_evidence = _control_calibrated('t2_standard', control_standard)
+    control_torus_ok, torus_evidence = _control_calibrated('t2_torus', control_torus)
+    evidence.extend([standard_evidence, torus_evidence])
+    if not (control_standard_ok and control_torus_ok):
         return {
             'branch': 'C',
             'summary': 'The pure-torus control does not yet show the expected 2D-stable / 1D-collapse pattern.',
@@ -393,12 +443,22 @@ def classify_branch(topology_runs: dict[str, dict]) -> dict:
             'evidence': evidence,
         }
 
-    key_runs = [summary for summary in (lattice_b010, lattice_b030) if summary is not None]
-    stable_fundamental = any(_stable_to_two(summary) for summary in key_runs)
-    collapse_fundamental = any(_collapse_to_one(summary) for summary in key_runs)
+    key_runs = [
+        (name, summary)
+        for name, summary in (
+            ('lattice_vae_norm_inv_b010_l100', lattice_b010),
+            ('lattice_vae_norm_inv_b030_l100', lattice_b030),
+        )
+        if summary is not None
+    ]
+    stable_names = [name for name, summary in key_runs if _stable_to_two(summary)]
+    collapse_names = [name for name, summary in key_runs if _collapse_to_one(summary)]
+    stable_fundamental = bool(stable_names)
+    collapse_fundamental = any(name in collapse_names for name in stable_names)
     wide_stable = wide is not None and _stable_to_two(wide)
 
     if not stable_fundamental and wide_stable:
+        evidence.append('`lattice_vae_wide_norm_inv_b003_l030` stays stable to k=2 while the fundamental-domain VAE+inv runs do not.')
         return {
             'branch': 'E',
             'summary': 'Wide lattice coverage remains stable to k=2 while fundamental-domain runs degrade earlier.',
@@ -406,7 +466,9 @@ def classify_branch(topology_runs: dict[str, dict]) -> dict:
             'evidence': evidence,
         }
 
-    if any(_projection_artifact(summary) for summary in key_runs if summary is not None):
+    artifact_names = [name for name, summary in key_runs if _projection_artifact(summary)]
+    if artifact_names:
+        evidence.append(f'Projection-artifact warning triggered for: {", ".join(f"`{name}`" for name in artifact_names)}.')
         return {
             'branch': 'D',
             'summary': 'The strongest low-dimensional H1 signal looks comparable to random-projection artifacts and degrades local geometry.',
@@ -415,6 +477,10 @@ def classify_branch(topology_runs: dict[str, dict]) -> dict:
         }
 
     if stable_fundamental and collapse_fundamental:
+        evidence.append(
+            f'Stable-to-k=2 runs: {", ".join(f"`{name}`" for name in stable_names)}; '
+            f'2->1 collapse is visible in: {", ".join(f"`{name}`" for name in collapse_names)}.'
+        )
         return {
             'branch': 'A',
             'summary': 'The best VAE+invariance runs remain comparatively stable down to k=2, then collapse at k=1.',
@@ -423,6 +489,7 @@ def classify_branch(topology_runs: dict[str, dict]) -> dict:
         }
 
     if not stable_fundamental:
+        evidence.append('Neither fundamental-domain VAE+inv representative run satisfies the stable-to-k=2 criteria.')
         return {
             'branch': 'B',
             'summary': 'Orbit gluing is present, but lattice quotient geometry already weakens at the 3->2 transition.',
@@ -430,6 +497,10 @@ def classify_branch(topology_runs: dict[str, dict]) -> dict:
             'evidence': evidence,
         }
 
+    evidence.append(
+        f'Stable-to-k=2 runs: {", ".join(f"`{name}`" for name in stable_names)}; '
+        'the calibrated controls support a genuinely 2D quotient interpretation.'
+    )
     return {
         'branch': 'A',
         'summary': 'The best lattice runs look stable to k=2, which supports a genuinely 2D quotient geometry.',
@@ -444,6 +515,11 @@ def write_report(
     output_path: str = 'walkthrough-topology-phaseA.md',
 ) -> None:
     """Write a markdown summary of the topology diagnostics."""
+    def delta(current: dict, previous: dict, key: str) -> str:
+        if not current or not previous:
+            return 'n/a'
+        return _fmt_metric(current.get(key, 0.0) - previous.get(key, 0.0))
+
     lines = [
         '# Topology Diagnostics Phase A',
         '',
@@ -456,33 +532,36 @@ def write_report(
         '',
         '## Control Calibration',
         '',
-        '| Run | k=4 trust | k=2 trust | k=2 overlap | k=1 trust | k=1 overlap |',
-        '|---|---|---|---|---|---|',
+        '| Run | k=4 trust | k=2 trust | k=1 trust | Δtrust 4→2 | Δtrust 2→1 | k=2 overlap | k=1 overlap | Δoverlap 2→1 |',
+        '|---|---|---|---|---|---|---|---|---|',
     ]
 
     for run_name in ('t2_standard', 't2_torus'):
         summary = topology_runs.get(run_name)
         if summary is None:
-            lines.append(f'| `{run_name}` | missing | missing | missing | missing | missing |')
+            lines.append(f'| `{run_name}` | missing | missing | missing | missing | missing | missing | missing | missing |')
             continue
 
         dim4 = _dim_metrics(summary, 4)
         dim2 = _dim_metrics(summary, 2)
         dim1 = _dim_metrics(summary, 1)
         lines.append(
-            f"| `{run_name}` | {dim4.get('trustworthiness', float('nan')):.4f} | "
-            f"{dim2.get('trustworthiness', float('nan')):.4f} | "
-            f"{dim2.get('knn_jaccard_mean', float('nan')):.4f} | "
-            f"{dim1.get('trustworthiness', float('nan')):.4f} | "
-            f"{dim1.get('knn_jaccard_mean', float('nan')):.4f} |"
+            f"| `{run_name}` | {_fmt_metric(dim4.get('trustworthiness'))} | "
+            f"{_fmt_metric(dim2.get('trustworthiness'))} | "
+            f"{_fmt_metric(dim1.get('trustworthiness'))} | "
+            f"{delta(dim2, dim4, 'trustworthiness')} | "
+            f"{delta(dim1, dim2, 'trustworthiness')} | "
+            f"{_fmt_metric(dim2.get('knn_jaccard_mean'))} | "
+            f"{_fmt_metric(dim1.get('knn_jaccard_mean'))} | "
+            f"{delta(dim1, dim2, 'knn_jaccard_mean')} |"
         )
 
     lines.extend([
         '',
         '## Lattice Representatives',
         '',
-        '| Run | full-k moddist | k=2 trust | k=2 overlap | k=2 eff_dim | k=2 H1 total | k=1 moddist | k=1 Spearman |',
-        '|---|---|---|---|---|---|---|---|',
+        '| Run | full rank | k=2 rank | k=2 hit | k=2 trust | k=2 overlap | k=2 eff_dim | k=2 H1 total | k=1 rank | k=1 Spearman |',
+        '|---|---|---|---|---|---|---|---|---|---|',
     ])
 
     lattice_run_names = [
@@ -496,7 +575,7 @@ def write_report(
     for run_name in lattice_run_names:
         summary = topology_runs.get(run_name)
         if summary is None:
-            lines.append(f'| `{run_name}` | missing | missing | missing | missing | missing | missing | missing |')
+            lines.append(f'| `{run_name}` | missing | missing | missing | missing | missing | missing | missing | missing | missing |')
             continue
 
         dims = summary['topology_diagnostics']['dims']
@@ -505,13 +584,15 @@ def write_report(
         dim2 = dims.get('2', {})
         dim1 = dims.get('1', {})
         lines.append(
-            f"| `{run_name}` | {0.0 if dim_full.get('projected_modular_distance') is None else dim_full.get('projected_modular_distance'):.4g} | "
-            f"{dim2.get('trustworthiness', float('nan')):.4f} | "
-            f"{dim2.get('knn_jaccard_mean', float('nan')):.4f} | "
-            f"{dim2.get('effective_dimension', float('nan')):.4f} | "
-            f"{dim2.get('h1_total_persistence', float('nan')):.4f} | "
-            f"{0.0 if dim1.get('projected_modular_distance') is None else dim1.get('projected_modular_distance'):.4g} | "
-            f"{0.0 if dim1.get('max_abs_logabsj_spearman') is None else dim1.get('max_abs_logabsj_spearman'):.4f} |"
+            f"| `{run_name}` | {_fmt_metric(dim_full.get('partner_rank_percentile_mean'))} | "
+            f"{_fmt_metric(dim2.get('partner_rank_percentile_mean'))} | "
+            f"{_fmt_metric(dim2.get('partner_knn_hit_rate'))} | "
+            f"{_fmt_metric(dim2.get('trustworthiness'))} | "
+            f"{_fmt_metric(dim2.get('knn_jaccard_mean'))} | "
+            f"{_fmt_metric(dim2.get('effective_dimension'))} | "
+            f"{_fmt_metric(dim2.get('h1_total_persistence'))} | "
+            f"{_fmt_metric(dim1.get('partner_rank_percentile_mean'))} | "
+            f"{_fmt_metric(dim1.get('max_abs_logabsj_spearman'))} |"
         )
 
     lines.extend([
@@ -522,6 +603,13 @@ def write_report(
         f"- Summary: {branch_assessment['summary']}",
         f"- Next step: {branch_assessment['recommended_next_step']}",
     ])
+    if branch_assessment.get('evidence'):
+        lines.extend([
+            '',
+            '### Evidence',
+            '',
+        ])
+        lines.extend([f'- {item}' for item in branch_assessment['evidence']])
 
     with open(output_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
@@ -571,16 +659,17 @@ def run_all(
 
     print(
         f"\n{'Run':<36} {'Kind':<10} {'k=2 trust':>10} "
-        f"{'k=2 overlap':>12} {'k=2 H1':>10} {'Branch':>8}"
+        f"{'k=2 overlap':>12} {'k=2 rank':>10} {'k=2 hit':>10} {'Branch':>8}"
     )
-    print('-' * 92)
+    print('-' * 104)
     for name, summary in topology_runs.items():
         dim2 = _dim_metrics(summary, 2)
         print(
             f"{name:<36} {summary['kind']:<10} "
             f"{dim2.get('trustworthiness', float('nan')):>10.4f} "
             f"{dim2.get('knn_jaccard_mean', float('nan')):>12.4f} "
-            f"{dim2.get('h1_total_persistence', float('nan')):>10.4f} "
+            f"{(float('nan') if dim2.get('partner_rank_percentile_mean') is None else dim2.get('partner_rank_percentile_mean')):>10.4f} "
+            f"{(float('nan') if dim2.get('partner_knn_hit_rate') is None else dim2.get('partner_knn_hit_rate')):>10.4f} "
             f"{branch_assessment['branch']:>8}"
         )
 

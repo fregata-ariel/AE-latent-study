@@ -61,5 +61,6 @@ def get_config() -> ml_collections.ConfigDict:
     config.eval.ph_random_projection_trials = 8
     config.eval.ph_knn_for_lid = 10
     config.eval.ph_noise_floor = 0.05
+    config.eval.ph_noise_floor_mode = 'relative'
 
     return config

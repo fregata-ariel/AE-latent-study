@@ -304,17 +304,18 @@ def test_step3_runner_with_tiny_config():
 
 def test_topology_runner_requires_tda_dependencies():
     with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            run_topology_all(
-                base_dir=tmpdir,
-                diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
-                report_path=os.path.join(tmpdir, 'walkthrough-topology-phaseA.md'),
-                experiments=[],
-            )
-        except RuntimeError as exc:
-            assert 'Topology diagnostics require optional TDA dependencies' in str(exc)
-        else:
-            raise AssertionError('Expected a missing-dependency RuntimeError')
+        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=False):
+            try:
+                run_topology_all(
+                    base_dir=tmpdir,
+                    diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+                    report_path=os.path.join(tmpdir, 'walkthrough-topology-phaseA.md'),
+                    experiments=[],
+                )
+            except RuntimeError as exc:
+                assert 'Topology diagnostics require optional TDA dependencies' in str(exc)
+            else:
+                raise AssertionError('Expected a missing-dependency RuntimeError')
 
 
 def test_topology_runner_with_fake_backend():
@@ -347,6 +348,11 @@ def test_topology_runner_with_fake_backend():
             config.train.num_epochs = 3
             return config
 
+        def tiny_t2_torus_factory():
+            config = _tiny_config(latent_type='torus', torus_dim=2, latent_dim=2)
+            config.train.num_epochs = 3
+            return config
+
         def tiny_lattice_factory():
             config = _tiny_lattice_config(
                 latent_type='vae',
@@ -361,6 +367,11 @@ def test_topology_runner_with_fake_backend():
                 'name': 't2_standard',
                 'kind': 'control',
                 'config_source': tiny_t2_factory,
+            },
+            {
+                'name': 't2_torus',
+                'kind': 'control',
+                'config_source': tiny_t2_torus_factory,
             },
             {
                 'name': 'lattice_vae_norm_inv_b030_l100',
@@ -382,7 +393,12 @@ def test_topology_runner_with_fake_backend():
         assert 'topology_diagnostics' in combined
         assert 'branch_assessment' in combined
         assert 't2_standard' in combined['topology_diagnostics']
+        assert 't2_torus' in combined['topology_diagnostics']
         assert 'lattice_vae_norm_inv_b030_l100' in combined['topology_diagnostics']
+        dim2 = combined['topology_diagnostics']['lattice_vae_norm_inv_b030_l100']['topology_diagnostics']['dims']['2']
+        assert 'partner_rank_percentile_mean' in dim2
+        assert 'partner_knn_hit_rate' in dim2
+        assert 'lid_valid_fraction' in dim2
 
         summary_path = os.path.join(
             tmpdir, 'topology_diagnostics', 'topology_diagnostics_summary.json',
@@ -398,3 +414,7 @@ def test_topology_runner_with_fake_backend():
         )
         assert os.path.exists(run_plot)
         assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'Evidence' in report_text
+        assert 'k=2 rank' in report_text
