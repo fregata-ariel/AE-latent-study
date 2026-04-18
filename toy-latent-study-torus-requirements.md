@@ -6,6 +6,12 @@
 
 ---
 
+> **ステータス注記 (as of 2026-04)**
+>
+> 本ドキュメントは本プロジェクトの**原初の要件定義**であり、歴史的経緯として保全している。現時点での Toy ($T^1/T^2$) スコープの as-built 仕様は [`TORUS_autoencoder.md`](./TORUS_autoencoder.md) に、格子/モジュラー方向への拡張は [`LATTICE_autoencoder.md`](./LATTICE_autoencoder.md) に整理されている。§11 の受け入れ条件はすべて満たされている (`python run_experiments.py` で再現可能)。
+
+---
+
 ## 1. 目的
 
 * 周期信号を、明示的なトーラス構造 ($T^n = (S^1)^n$) を持つパラメータから生成する。
@@ -258,14 +264,14 @@
 
 ## 11. 受け入れ条件
 
-最低限、以下を満たしたら第一段階完了とみなす。
+最低限、以下を満たしたら第一段階完了とみなす。(現状: **すべて達成済み** — 実装詳細は [`TORUS_autoencoder.md`](./TORUS_autoencoder.md))
 
-* 合成周期信号データを生成できる
-* Autoencoderを学習できる
-* 再構成が一定程度成功する
-* 真の潜在角度と学習latentの関係を可視化できる
-* (T^1) で円周っぽい構造、またはそれに準ずる周期的対応が観察できる
-* (T^2) で単純な線形潜在では扱いづらいこと、または構造が崩れやすいことを確認できる
+* [x] 合成周期信号データを生成できる (`data/generation.py::generate_t1_signals`, `generate_t2_signals`)
+* [x] Autoencoderを学習できる (`train/trainer.py::train_and_evaluate`)
+* [x] 再構成が一定程度成功する (`configs/t{1,2}_{standard,torus}.py` で検証済み)
+* [x] 真の潜在角度と学習latentの関係を可視化できる (`eval/visualization.py::plot_latent_scatter`)
+* [x] (T^1) で円周っぽい構造、またはそれに準ずる周期的対応が観察できる
+* [x] (T^2) で単純な線形潜在では扱いづらいこと、または構造が崩れやすいことを確認できる
 
 ---
 
@@ -293,6 +299,8 @@
 * 商空間としての潜在の設計
 * モジュライ的データへの拡張
 * 最終的には「潜在空間上の自然関数系」を考える方向へつなぐ
+
+> **実装状況 (as of 2026-04)**: 「商空間としての潜在」「モジュライ的データへの拡張」は `models/modular_ae.py` + `configs/lattice_*.py` として実装済み。詳細は [`LATTICE_autoencoder.md`](./LATTICE_autoencoder.md) 参照。
 
 ---
 
