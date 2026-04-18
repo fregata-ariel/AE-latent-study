@@ -3,9 +3,9 @@
 ## Current Node
 
 - Confirmed state: `Branch A`
-- Current diagnostic basis: `Topology Phase A`
+- Current diagnostic basis: `Topology Phase B`
 - Current recommendation: `A1`
-- Why now: the calibrated controls support a 2D quotient interpretation, and the best fundamental-domain VAE+invariance runs still look stable to `k=2` before collapsing at `k=1`.
+- Why now: The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.
 
 ## Active Branches
 
