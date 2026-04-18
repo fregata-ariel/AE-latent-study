@@ -57,5 +57,12 @@ def get_config() -> ml_collections.ConfigDict:
     config.eval.use_umap = False
     config.eval.chart_n_neighbors = 8
     config.eval.chart_max_samples = 2000
+    config.eval.ph_enabled = False
+    config.eval.ph_max_samples = 2000
+    config.eval.ph_proj_dims = ()
+    config.eval.ph_maxdim = 1
+    config.eval.ph_random_projection_trials = 8
+    config.eval.ph_knn_for_lid = 10
+    config.eval.ph_noise_floor = 0.05
 
     return config

@@ -3,6 +3,7 @@
 import os
 import tempfile
 import json
+from unittest.mock import patch
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +13,7 @@ from configs.default import get_config
 from configs.lattice_default import get_config as get_lattice_config
 from run_lattice_step2_experiments import run_all as run_step2_all
 from run_lattice_step3_experiments import run_all as run_step3_all
+from run_latent_topology_diagnostics import run_all as run_topology_all
 from eval.analysis import run_full_evaluation
 from train.trainer import train_and_evaluate
 
@@ -298,3 +300,101 @@ def test_step3_runner_with_tiny_config():
         assert 'lattice_standard_norm_inv' in report_text
         assert 'Success gate' in report_text
         assert 'Selected run' in report_text
+
+
+def test_topology_runner_requires_tda_dependencies():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            run_topology_all(
+                base_dir=tmpdir,
+                diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+                report_path=os.path.join(tmpdir, 'walkthrough-topology-phaseA.md'),
+                experiments=[],
+            )
+        except RuntimeError as exc:
+            assert 'Topology diagnostics require optional TDA dependencies' in str(exc)
+        else:
+            raise AssertionError('Expected a missing-dependency RuntimeError')
+
+
+def test_topology_runner_with_fake_backend():
+    def fake_persistence_diagrams(points, maxdim):
+        spread = max(float(np.std(points)), 1e-3)
+        h0 = np.array([[0.0, spread]], dtype=float)
+        h1 = (
+            np.array([[0.1 * spread, 0.7 * spread]], dtype=float)
+            if maxdim >= 1 and points.shape[1] >= 2 else
+            np.zeros((0, 2), dtype=float)
+        )
+        return [h0, h1]
+
+    def fake_diagram_distances(previous, current):
+        if previous is None:
+            return None
+        return {
+            'h0_bottleneck': 0.05,
+            'h1_bottleneck': 0.07,
+            'h0_wasserstein': 0.06,
+            'h1_wasserstein': 0.08,
+            'max_bottleneck': 0.07,
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-topology-phaseA.md')
+
+        def tiny_t2_factory():
+            config = _tiny_config(latent_type='standard', torus_dim=2, latent_dim=4)
+            config.train.num_epochs = 3
+            return config
+
+        def tiny_lattice_factory():
+            config = _tiny_lattice_config(
+                latent_type='vae',
+                latent_dim=4,
+                modular_invariance_weight=0.1,
+            )
+            config.model.vae_beta = 0.01
+            return config
+
+        experiments = [
+            {
+                'name': 't2_standard',
+                'kind': 'control',
+                'config_source': tiny_t2_factory,
+            },
+            {
+                'name': 'lattice_vae_norm_inv_b030_l100',
+                'kind': 'lattice',
+                'config_source': tiny_lattice_factory,
+            },
+        ]
+
+        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+            with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
+                with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
+                    combined = run_topology_all(
+                        base_dir=tmpdir,
+                        diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+                        report_path=report_path,
+                        experiments=experiments,
+                    )
+
+        assert 'topology_diagnostics' in combined
+        assert 'branch_assessment' in combined
+        assert 't2_standard' in combined['topology_diagnostics']
+        assert 'lattice_vae_norm_inv_b030_l100' in combined['topology_diagnostics']
+
+        summary_path = os.path.join(
+            tmpdir, 'topology_diagnostics', 'topology_diagnostics_summary.json',
+        )
+        assert os.path.exists(summary_path)
+        with open(summary_path) as f:
+            saved = json.load(f)
+        assert 'topology_diagnostics' in saved
+
+        run_plot = os.path.join(
+            tmpdir, 'topology_diagnostics', 'lattice_vae_norm_inv_b030_l100',
+            'metrics_vs_k.png',
+        )
+        assert os.path.exists(run_plot)
+        assert os.path.exists(report_path)

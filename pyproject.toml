@@ -21,6 +21,10 @@ dependencies = [
 
 [project.optional-dependencies]
 umap = ["umap-learn"]
+tda = [
+    "ripser",
+    "persim",
+]
 cuda = [
     "jax[cuda12]",
 ]
