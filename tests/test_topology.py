@@ -1,5 +1,7 @@
 """Unit tests for latent topology diagnostics."""
 
+import os
+import tempfile
 from unittest.mock import patch
 
 import jax.numpy as jnp
@@ -13,7 +15,10 @@ from eval.topology import (
     _summarize_diagrams,
     compute_local_intrinsic_dimension,
     diagnose_projection_ladder,
+    load_diagram_payload,
     make_reference_coords,
+    plot_phaseb_h1_diagram_grid,
+    save_diagram_payload,
 )
 from run_latent_topology_diagnostics import classify_branch
 
@@ -95,6 +100,7 @@ def test_partner_preservation_metrics_are_scale_and_rotation_invariant():
     assert np.isclose(base['partner_rank_percentile_mean'], scaled_metrics['partner_rank_percentile_mean'])
     assert np.isclose(base['partner_knn_hit_rate'], rotated_metrics['partner_knn_hit_rate'])
     assert np.isclose(base['partner_knn_hit_rate'], scaled_metrics['partner_knn_hit_rate'])
+    assert np.isclose(base['partner_knn_hit_rate'], 1.0)
 
 
 def test_partner_preservation_metrics_improve_when_partners_are_closer():
@@ -126,6 +132,81 @@ def test_relative_noise_floor_is_scale_invariant():
         scaled_summary['noise_floor_value_h1'],
         2.5 * base['noise_floor_value_h1'],
     )
+
+
+def test_diagram_payload_roundtrip_preserves_summary_and_artifacts():
+    summary = {
+        'projection_basis': 'pca',
+        'reference_space': 'euclidean_fd',
+        'n_samples': 12,
+        'full_latent_dim': 4,
+        'dims': {
+            '2': {
+                'trustworthiness': 0.85,
+                'h1_total_persistence': 1.2,
+                'diagram_distance_to_prev': {'h1_bottleneck': 0.2},
+            },
+            '1': {
+                'trustworthiness': 0.72,
+                'h1_total_persistence': 0.0,
+                'diagram_distance_to_prev': {'h1_bottleneck': 0.6},
+            },
+        },
+    }
+    artifacts = {
+        'subsample_indices': np.array([0, 2, 4, 6], dtype=int),
+        'pca_diagrams': {
+            '2': [
+                np.array([[0.0, 0.5]], dtype=float),
+                np.array([[0.1, 0.8], [0.3, 0.35]], dtype=float),
+            ],
+            '1': [
+                np.array([[0.0, 0.4]], dtype=float),
+                np.zeros((0, 2), dtype=float),
+            ],
+        },
+        'local_overlap': {
+            '2': np.array([0.4, 0.5, 0.6], dtype=float),
+            '1': np.array([0.1, 0.2, 0.3], dtype=float),
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        payload_path = os.path.join(tmpdir, 'diagram_payload.npz')
+        save_diagram_payload(payload_path, summary, artifacts)
+        payload = load_diagram_payload(payload_path)
+
+    assert payload['summary']['dims']['2']['trustworthiness'] == 0.85
+    assert np.array_equal(payload['artifacts']['subsample_indices'], artifacts['subsample_indices'])
+    assert np.allclose(
+        payload['artifacts']['pca_diagrams']['2'][1],
+        artifacts['pca_diagrams']['2'][1],
+    )
+    assert np.allclose(
+        payload['artifacts']['bar_lengths']['2']['1'],
+        np.array([0.7, 0.05], dtype=float),
+    )
+
+
+def test_phaseb_diagram_grid_handles_empty_diagrams():
+    payloads = {
+        'example_run': {
+            'summary': {'dims': {'2': {}}},
+            'artifacts': {
+                'pca_diagrams': {'2': [np.zeros((0, 2)), np.zeros((0, 2))]},
+                'local_overlap': {'2': np.zeros(0)},
+                'bar_lengths': {'2': {'0': np.zeros(0), '1': np.zeros(0)}},
+            },
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fig = plot_phaseb_h1_diagram_grid(
+            payloads, dim=2, save_path=os.path.join(tmpdir, 'grid.png'),
+        )
+        fig.canvas.draw()
+
+        assert os.path.exists(os.path.join(tmpdir, 'grid.png'))
 
 
 def test_make_reference_coords_torus_embedding():

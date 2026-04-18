@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from typing import Any
 
 import jax.numpy as jnp
@@ -273,9 +274,9 @@ def _compute_partner_preservation_metrics(
     closer_counts = np.sum(dists < partner_dists[:, None], axis=1)
     partner_rank_percentiles = closer_counts / max(n_samples - 1, 1)
 
+    # Use the same exact rank calculation for both percentile and top-k hit.
     k_neighbors = max(1, min(n_neighbors, n_samples - 1))
-    kth_neighbor = np.partition(dists, kth=k_neighbors - 1, axis=1)[:, k_neighbors - 1]
-    partner_hits = partner_dists <= kth_neighbor
+    partner_hits = closer_counts < k_neighbors
 
     return {
         'partner_rank_percentile_mean': float(np.mean(partner_rank_percentiles)),
@@ -537,6 +538,87 @@ def diagnose_projection_ladder(
     return summary, artifacts
 
 
+def save_diagram_payload(
+    payload_path: str,
+    diagnostics_summary: dict[str, Any],
+    diagnostics_artifacts: dict[str, Any],
+) -> None:
+    """Save PH diagrams and related arrays to a compressed payload file."""
+    dims = sorted((int(dim) for dim in diagnostics_summary['dims']), reverse=True)
+    payload = {
+        'summary_json': np.asarray(json.dumps(diagnostics_summary)),
+        'dims': np.asarray(dims, dtype=int),
+        'subsample_indices': np.asarray(
+            diagnostics_artifacts.get('subsample_indices', np.zeros(0, dtype=int)),
+            dtype=int,
+        ),
+    }
+
+    for dim in dims:
+        dim_key = str(dim)
+        diagrams = diagnostics_artifacts.get('pca_diagrams', {}).get(dim_key, [])
+        local_overlap = diagnostics_artifacts.get('local_overlap', {}).get(dim_key)
+        if local_overlap is None:
+            local_overlap = np.zeros(0, dtype=float)
+
+        for hom_dim in (0, 1):
+            diagram = (
+                np.asarray(diagrams[hom_dim], dtype=float)
+                if hom_dim < len(diagrams) else
+                np.zeros((0, 2), dtype=float)
+            )
+            payload[f'dim_{dim_key}_h{hom_dim}_diagram'] = diagram
+            payload[f'dim_{dim_key}_h{hom_dim}_lengths'] = _finite_bar_lengths(diagram)
+
+        payload[f'dim_{dim_key}_local_overlap'] = np.asarray(local_overlap, dtype=float)
+
+    np.savez_compressed(payload_path, **payload)
+
+
+def load_diagram_payload(payload_path: str) -> dict[str, Any]:
+    """Load a compressed PH payload written by ``save_diagram_payload``."""
+    with np.load(payload_path, allow_pickle=False) as data:
+        summary = json.loads(str(data['summary_json'].item()))
+        dims = [str(int(dim)) for dim in np.asarray(data['dims'], dtype=int).tolist()]
+        artifacts = {
+            'subsample_indices': np.asarray(data['subsample_indices'], dtype=int),
+            'pca_diagrams': {},
+            'local_overlap': {},
+            'bar_lengths': {},
+        }
+
+        for dim_key in dims:
+            diagrams = []
+            bar_lengths = {}
+            for hom_dim in (0, 1):
+                diagram_key = f'dim_{dim_key}_h{hom_dim}_diagram'
+                lengths_key = f'dim_{dim_key}_h{hom_dim}_lengths'
+                diagrams.append(
+                    np.asarray(data[diagram_key], dtype=float)
+                    if diagram_key in data else
+                    np.zeros((0, 2), dtype=float)
+                )
+                bar_lengths[str(hom_dim)] = (
+                    np.asarray(data[lengths_key], dtype=float)
+                    if lengths_key in data else
+                    np.zeros(0, dtype=float)
+                )
+
+            artifacts['pca_diagrams'][dim_key] = diagrams
+            artifacts['bar_lengths'][dim_key] = bar_lengths
+            overlap_key = f'dim_{dim_key}_local_overlap'
+            artifacts['local_overlap'][dim_key] = (
+                np.asarray(data[overlap_key], dtype=float)
+                if overlap_key in data else
+                np.zeros(0, dtype=float)
+            )
+
+    return {
+        'summary': summary,
+        'artifacts': artifacts,
+    }
+
+
 def plot_topology_metrics_vs_k(
     diagnostics_summary: dict[str, Any],
     save_path: str | None = None,
@@ -697,6 +779,182 @@ def plot_projection_comparison(
         ax.legend()
 
     fig.suptitle('PCA vs random projection baselines', fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def _plot_h1_barcode(ax: plt.Axes, diagram: np.ndarray, top_n: int = 20) -> None:
+    """Plot a simple H1 barcode from one persistence diagram."""
+    diag = _canonical_diagram(diagram)
+    if diag.size == 0:
+        ax.text(0.5, 0.5, 'no finite bars', ha='center', va='center',
+                transform=ax.transAxes)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+
+    lengths = diag[:, 1] - diag[:, 0]
+    order = np.argsort(lengths)[::-1][:top_n]
+    diag = diag[order]
+    for idx, (birth, death) in enumerate(diag):
+        ax.hlines(idx, birth, death, linewidth=2.0)
+    ax.set_ylim(-1, len(diag))
+    ax.set_xlabel('filtration value')
+    ax.set_yticks([])
+    ax.grid(True, axis='x', alpha=0.2)
+
+
+def plot_phaseb_h1_trajectory(
+    run_summaries: dict[str, dict[str, Any]],
+    run_order: list[str] | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Plot cross-run H1 trajectories along the projection ladder."""
+    ordered_runs = run_order or list(run_summaries)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharex=False)
+    metric_specs = [
+        ('h1_total_persistence', 'H1 total persistence'),
+        ('h1_longest_bar', 'H1 longest bar'),
+        ('h1_bar_count', 'H1 bar count'),
+    ]
+
+    for ax, (metric_key, title) in zip(axes, metric_specs, strict=True):
+        for run_name in ordered_runs:
+            summary = run_summaries.get(run_name)
+            if summary is None:
+                continue
+            dims = sorted(
+                (int(dim) for dim in summary['topology_diagnostics']['dims']),
+                reverse=True,
+            )
+            values = [
+                summary['topology_diagnostics']['dims'][str(dim)].get(metric_key, 0.0)
+                for dim in dims
+            ]
+            ax.plot(dims, values, marker='o', label=run_name)
+        ax.set_title(title)
+        ax.set_xlabel('Projection dimension k')
+        ax.grid(True, alpha=0.2)
+
+    axes[0].set_ylabel('value')
+    axes[-1].legend(fontsize=8, loc='best')
+    fig.suptitle('Phase B: H1 trajectory comparison', fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def plot_phaseb_diagram_distance(
+    run_summaries: dict[str, dict[str, Any]],
+    run_order: list[str] | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Plot ladder-step diagram distances across runs."""
+    ordered_runs = run_order or list(run_summaries)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharex=False)
+    metric_specs = [
+        ('h1_bottleneck', 'H1 bottleneck'),
+        ('h1_wasserstein', 'H1 Wasserstein'),
+        ('max_bottleneck', 'max bottleneck'),
+    ]
+
+    for ax, (metric_key, title) in zip(axes, metric_specs, strict=True):
+        for run_name in ordered_runs:
+            summary = run_summaries.get(run_name)
+            if summary is None:
+                continue
+            dims = sorted(
+                (int(dim) for dim in summary['topology_diagnostics']['dims']),
+                reverse=True,
+            )
+            current_dims = []
+            values = []
+            for dim in dims:
+                distance_metrics = summary['topology_diagnostics']['dims'][str(dim)].get(
+                    'diagram_distance_to_prev',
+                )
+                if distance_metrics is None:
+                    continue
+                current_dims.append(dim)
+                values.append(distance_metrics.get(metric_key, 0.0))
+            if current_dims:
+                ax.plot(current_dims, values, marker='o', label=run_name)
+        ax.set_title(title)
+        ax.set_xlabel('current k in previous→k step')
+        ax.grid(True, alpha=0.2)
+
+    axes[0].set_ylabel('distance')
+    axes[-1].legend(fontsize=8, loc='best')
+    fig.suptitle('Phase B: diagram-distance trajectory', fontsize=14)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def plot_phaseb_h1_diagram_grid(
+    run_payloads: dict[str, dict[str, Any]],
+    dim: int,
+    run_order: list[str] | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Plot a per-run H1 diagram/barcode grid for one projection dimension."""
+    ordered_runs = run_order or list(run_payloads)
+    fig, axes = plt.subplots(
+        len(ordered_runs), 2, figsize=(10, max(3.0, 2.5 * len(ordered_runs))),
+    )
+    axes = np.atleast_2d(axes)
+    dim_key = str(dim)
+
+    for row, run_name in enumerate(ordered_runs):
+        payload = run_payloads.get(run_name)
+        diagram_ax = axes[row, 0]
+        barcode_ax = axes[row, 1]
+        diagram_ax.text(
+            -0.35, 0.5, run_name,
+            transform=diagram_ax.transAxes,
+            rotation=90,
+            va='center',
+            ha='center',
+        )
+
+        if payload is None:
+            diagram_ax.text(0.5, 0.5, 'missing payload', ha='center', va='center',
+                            transform=diagram_ax.transAxes)
+            barcode_ax.text(0.5, 0.5, 'missing payload', ha='center', va='center',
+                            transform=barcode_ax.transAxes)
+            continue
+
+        diagrams = payload['artifacts']['pca_diagrams'].get(dim_key)
+        if diagrams is None:
+            diagram_ax.text(0.5, 0.5, f'missing k={dim}', ha='center', va='center',
+                            transform=diagram_ax.transAxes)
+            barcode_ax.text(0.5, 0.5, f'missing k={dim}', ha='center', va='center',
+                            transform=barcode_ax.transAxes)
+            continue
+
+        diagram = diagrams[1] if len(diagrams) > 1 else np.zeros((0, 2), dtype=float)
+        if diagram.size:
+            max_val = float(np.max(diagram)) if np.max(diagram) > 0 else 1.0
+            diagram_ax.scatter(diagram[:, 0], diagram[:, 1], s=10, alpha=0.7)
+            diagram_ax.plot([0.0, max_val], [0.0, max_val], 'k--', linewidth=0.8, alpha=0.5)
+            diagram_ax.set_xlim(0.0, max_val * 1.05)
+            diagram_ax.set_ylim(0.0, max_val * 1.05)
+        else:
+            diagram_ax.text(0.5, 0.5, 'no finite H1 bars', ha='center', va='center',
+                            transform=diagram_ax.transAxes)
+        diagram_ax.set_title(f'k={dim} H1 diagram')
+        diagram_ax.set_xlabel('birth')
+        diagram_ax.set_ylabel('death')
+        diagram_ax.grid(True, alpha=0.2)
+
+        _plot_h1_barcode(barcode_ax, diagram)
+        barcode_ax.set_title(f'k={dim} H1 barcode')
+
+    fig.suptitle(f'Phase B: cross-run H1 comparison at k={dim}', fontsize=14)
     fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')

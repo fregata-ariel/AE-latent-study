@@ -14,6 +14,7 @@ from configs.lattice_default import get_config as get_lattice_config
 from run_lattice_step2_experiments import run_all as run_step2_all
 from run_lattice_step3_experiments import run_all as run_step3_all
 from run_latent_topology_diagnostics import run_all as run_topology_all
+from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 from eval.analysis import run_full_evaluation
 from train.trainer import train_and_evaluate
 
@@ -399,6 +400,7 @@ def test_topology_runner_with_fake_backend():
         assert 'partner_rank_percentile_mean' in dim2
         assert 'partner_knn_hit_rate' in dim2
         assert 'lid_valid_fraction' in dim2
+        assert combined['topology_diagnostics']['lattice_vae_norm_inv_b030_l100']['diagram_payload'] == 'diagram_payload.npz'
 
         summary_path = os.path.join(
             tmpdir, 'topology_diagnostics', 'topology_diagnostics_summary.json',
@@ -418,3 +420,101 @@ def test_topology_runner_with_fake_backend():
             report_text = f.read()
         assert 'Evidence' in report_text
         assert 'k=2 rank' in report_text
+        payload_path = os.path.join(
+            tmpdir, 'topology_diagnostics', 'lattice_vae_norm_inv_b030_l100',
+            'diagram_payload.npz',
+        )
+        assert os.path.exists(payload_path)
+
+
+def test_topology_phaseb_runner_with_saved_phasea_outputs():
+    def fake_persistence_diagrams(points, maxdim):
+        spread = max(float(np.std(points)), 1e-3)
+        h0 = np.array([[0.0, spread]], dtype=float)
+        h1 = (
+            np.array([[0.1 * spread, 0.7 * spread]], dtype=float)
+            if maxdim >= 1 and points.shape[1] >= 2 else
+            np.zeros((0, 2), dtype=float)
+        )
+        return [h0, h1]
+
+    def fake_diagram_distances(previous, current):
+        if previous is None:
+            return None
+        return {
+            'h0_bottleneck': 0.05,
+            'h1_bottleneck': 0.15,
+            'h0_wasserstein': 0.06,
+            'h1_wasserstein': 0.18,
+            'max_bottleneck': 0.15,
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        phasea_report = os.path.join(tmpdir, 'walkthrough-topology-phaseA.md')
+        phaseb_report = os.path.join(tmpdir, 'walkthrough-topology-phaseB.md')
+        roadmap_path = os.path.join(tmpdir, 'ae-latent-study-roadmap.md')
+
+        def tiny_t2_factory():
+            config = _tiny_config(latent_type='standard', torus_dim=2, latent_dim=4)
+            config.train.num_epochs = 3
+            return config
+
+        def tiny_t2_torus_factory():
+            config = _tiny_config(latent_type='torus', torus_dim=2, latent_dim=2)
+            config.train.num_epochs = 3
+            return config
+
+        def tiny_lattice_factory():
+            config = _tiny_lattice_config(
+                latent_type='vae',
+                latent_dim=4,
+                modular_invariance_weight=0.1,
+            )
+            config.model.vae_beta = 0.01
+            return config
+
+        experiments = [
+            {'name': 't2_standard', 'kind': 'control', 'config_source': tiny_t2_factory},
+            {'name': 't2_torus', 'kind': 'control', 'config_source': tiny_t2_torus_factory},
+            {'name': 'lattice_vae_norm_inv_b010_l100', 'kind': 'lattice', 'config_source': tiny_lattice_factory},
+            {'name': 'lattice_vae_norm_inv_b030_l100', 'kind': 'lattice', 'config_source': tiny_lattice_factory},
+        ]
+
+        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+            with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
+                with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
+                    run_topology_all(
+                        base_dir=tmpdir,
+                        diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+                        report_path=phasea_report,
+                        experiments=experiments,
+                    )
+
+        combined = run_topology_phaseb_all(
+            base_dir=tmpdir,
+            diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+            summary_filename='phaseB_comparison_summary.json',
+            report_path=phaseb_report,
+            roadmap_path=roadmap_path,
+            experiments=experiments,
+        )
+
+        assert combined['source_phaseA_branch']['branch'] in {'A', 'B', 'C', 'D', 'E'}
+        assert 'phaseB_decision' in combined
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics', 'phaseB_comparison_summary.json'))
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics', 'phaseB_h1_trajectory.png'))
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics', 'phaseB_diagram_distance.png'))
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics', 'phaseB_diagram_grid_k2.png'))
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics', 'phaseB_diagram_grid_k1.png'))
+        assert os.path.exists(phaseb_report)
+        assert os.path.exists(roadmap_path)
+
+        with open(phaseb_report) as f:
+            phaseb_text = f.read()
+        assert 'Primary branch' in phaseb_text
+        assert 'PH Trajectory Comparison' in phaseb_text
+
+        with open(roadmap_path) as f:
+            roadmap_text = f.read()
+        assert 'Current recommendation' in roadmap_text
+        assert 'Active Branches' in roadmap_text

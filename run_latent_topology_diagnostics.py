@@ -17,6 +17,7 @@ from eval.metrics import encode_dataset
 from eval.topology import (
     diagnose_projection_ladder,
     encode_lattice_partner_latent,
+    save_diagram_payload,
     make_reference_coords,
     plot_persistence_panels,
     plot_projection_comparison,
@@ -261,12 +262,18 @@ def _run_topology_for_experiment(
         save_path=os.path.join(run_output_dir, 'projection_comparison.png'),
     )
     plt.close(fig)
+    save_diagram_payload(
+        os.path.join(run_output_dir, 'diagram_payload.npz'),
+        diagnostics_summary,
+        diagnostics_artifacts,
+    )
 
     run_summary = {
         'name': run_name,
         'kind': kind,
         'workdir': workdir,
         'reference_space': reference_label,
+        'diagram_payload': 'diagram_payload.npz',
         'topology_diagnostics': diagnostics_summary,
     }
     with open(os.path.join(run_output_dir, 'summary.json'), 'w') as f:
