@@ -451,6 +451,40 @@ def _compute_quotient_variance_floor_metrics(
     return loss, variances
 
 
+def _compute_covariance(points: np.ndarray) -> np.ndarray:
+    """Return a stable sample covariance matrix."""
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] <= 1:
+        return np.zeros((pts.shape[-1], pts.shape[-1]), dtype=float)
+
+    centered = pts - np.mean(pts, axis=0, keepdims=True)
+    denom = max(pts.shape[0] - 1, 1)
+    return (centered.T @ centered) / denom
+
+
+def _compute_quotient_spread_metrics(
+    tau_coords: np.ndarray,
+    quotient_coords: np.ndarray,
+    min_eig_ratio_target: float,
+    trace_cap_ratio: float,
+) -> tuple[float, np.ndarray, np.ndarray, float]:
+    """Return rotation-aware quotient spread metrics."""
+    tau_cov = _compute_covariance(tau_coords)
+    quotient_cov = _compute_covariance(quotient_coords)
+    tau_eigs = np.clip(np.linalg.eigvalsh(tau_cov), a_min=0.0, a_max=None)
+    quotient_eigs = np.clip(np.linalg.eigvalsh(quotient_cov), a_min=0.0, a_max=None)
+
+    tau_min = float(tau_eigs[0]) if tau_eigs.size else 0.0
+    tau_trace = float(np.sum(tau_eigs))
+    quotient_min = float(quotient_eigs[0]) if quotient_eigs.size else 0.0
+    quotient_trace = float(np.sum(quotient_eigs))
+
+    min_eig_floor = max(min_eig_ratio_target * tau_min - quotient_min, 0.0) ** 2
+    trace_cap = max(quotient_trace - trace_cap_ratio * tau_trace, 0.0) ** 2
+    loss = float(min_eig_floor + 0.1 * trace_cap)
+    return loss, quotient_eigs, tau_eigs, tau_trace
+
+
 def _local_knn_jaccard(
     tau_coords: np.ndarray,
     latent_coords: np.ndarray,
@@ -724,6 +758,16 @@ def compute_factorized_consistency(
         quotient,
         target=getattr(config.train, 'quotient_variance_floor_target', 0.15),
     )
+    quotient_spread_loss, quotient_cov_eigs, tau_cov_eigs, tau_cov_trace = (
+        _compute_quotient_spread_metrics(
+            tau_coords,
+            quotient,
+            min_eig_ratio_target=getattr(
+                config.train, 'quotient_min_eig_ratio_target', 0.20,
+            ),
+            trace_cap_ratio=getattr(config.train, 'quotient_trace_cap_ratio', 1.50),
+        )
+    )
 
     return {
         'quotient_pair_distance_mean': float(np.mean(np.linalg.norm(
@@ -743,4 +787,9 @@ def compute_factorized_consistency(
         'quotient_variance_floor_loss': quotient_variance_floor_loss,
         'quotient_var_dim0': float(quotient_variances[0]) if quotient_variances.size >= 1 else 0.0,
         'quotient_var_dim1': float(quotient_variances[1]) if quotient_variances.size >= 2 else 0.0,
+        'quotient_spread_loss': quotient_spread_loss,
+        'quotient_cov_eig_min': float(quotient_cov_eigs[0]) if quotient_cov_eigs.size >= 1 else 0.0,
+        'quotient_cov_eig_max': float(quotient_cov_eigs[-1]) if quotient_cov_eigs.size >= 1 else 0.0,
+        'tau_cov_eig_min': float(tau_cov_eigs[0]) if tau_cov_eigs.size >= 1 else 0.0,
+        'tau_cov_trace': float(tau_cov_trace),
     }

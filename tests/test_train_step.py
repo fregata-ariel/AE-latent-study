@@ -11,6 +11,7 @@ from train.train_step import (
     _make_train_step_factorized_lattice_vae,
     _make_train_step_lattice_invariant_vae,
     _quotient_chart_loss,
+    _quotient_spread_loss,
     _quotient_variance_floor_loss,
     _make_train_step_vae,
 )
@@ -66,6 +67,9 @@ def _tiny_factorized_lattice_config():
     config.train.chart_preserving_n_neighbors = 4
     config.train.quotient_variance_floor_weight = 0.01
     config.train.quotient_variance_floor_target = 0.15
+    config.train.quotient_spread_weight = 0.03
+    config.train.quotient_min_eig_ratio_target = 0.20
+    config.train.quotient_trace_cap_ratio = 1.50
     return config
 
 
@@ -127,6 +131,81 @@ def test_quotient_variance_floor_loss_detects_collapse():
     assert float(collapsed_loss) > 0.0
     assert float(spread_loss) >= 0.0
     assert float(spread_loss) < float(collapsed_loss)
+
+
+def test_quotient_spread_loss_is_rotation_invariant():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.2],
+        [0.3, 1.2],
+        [1.1, 1.0],
+        [0.5, 0.7],
+    ])
+    quotient = jnp.array([
+        [0.1, 0.0],
+        [1.3, 0.2],
+        [0.5, 1.0],
+        [1.2, 0.9],
+        [0.6, 0.5],
+    ])
+    theta = np.pi / 3.0
+    rotation = jnp.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)],
+    ], dtype=jnp.float32)
+    rotated = quotient @ rotation.T
+
+    loss_a, eigs_a, _, _ = _quotient_spread_loss(tau, quotient, 0.2, 1.5)
+    loss_b, eigs_b, _, _ = _quotient_spread_loss(tau, rotated, 0.2, 1.5)
+
+    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=1e-7)
+    np.testing.assert_allclose(np.array(eigs_a), np.array(eigs_b), atol=1e-7)
+
+
+def test_quotient_spread_loss_detects_collapse():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.2, 1.2],
+        [1.1, 1.0],
+        [0.6, 0.7],
+    ])
+    collapsed = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [3.0, 0.0],
+        [4.0, 0.0],
+    ])
+    spread = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.1],
+        [0.2, 1.1],
+        [1.2, 1.0],
+        [0.6, 0.7],
+    ])
+
+    loss_collapsed, _, _, _ = _quotient_spread_loss(tau, collapsed, 0.2, 1.5)
+    loss_spread, _, _, _ = _quotient_spread_loss(tau, spread, 0.2, 1.5)
+
+    assert float(loss_collapsed) > float(loss_spread)
+
+
+def test_quotient_spread_loss_penalizes_over_expansion():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.4, 0.6],
+    ])
+    balanced = tau
+    overexpanded = tau * jnp.array([4.0, 0.2])
+
+    loss_balanced, _, _, _ = _quotient_spread_loss(tau, balanced, 0.2, 1.5)
+    loss_overexpanded, _, _, _ = _quotient_spread_loss(tau, overexpanded, 0.2, 1.5)
+
+    assert float(loss_overexpanded) > float(loss_balanced)
 
 
 def test_train_step_lattice_invariant_vae_reports_all_terms():
@@ -228,6 +307,9 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         config.train.chart_preserving_n_neighbors,
         config.train.quotient_variance_floor_weight,
         config.train.quotient_variance_floor_target,
+        config.train.quotient_spread_weight,
+        config.train.quotient_min_eig_ratio_target,
+        config.train.quotient_trace_cap_ratio,
     )
     next_state, metrics = step_fn(
         state, batch, paired_batch, transform_ids, tau_fd_coords,
@@ -244,6 +326,7 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         'action_regularizer',
         'quotient_chart_loss',
         'quotient_variance_floor_loss',
+        'quotient_spread_loss',
     ):
         assert key in metrics
         assert np.isfinite(float(metrics[key]))

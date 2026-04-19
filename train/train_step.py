@@ -15,6 +15,18 @@ def _pairwise_l2(points: jnp.ndarray) -> jnp.ndarray:
     return jnp.sqrt(jnp.sum(diffs ** 2, axis=-1) + 1e-12)
 
 
+def _covariance_matrix(points: jnp.ndarray) -> jnp.ndarray:
+    """Compute a stable sample covariance for a point cloud."""
+    n_points = points.shape[0]
+    n_dims = points.shape[-1]
+    if n_points <= 1:
+        return jnp.zeros((n_dims, n_dims), dtype=points.dtype)
+
+    centered = points - jnp.mean(points, axis=0, keepdims=True)
+    denom = jnp.maximum(n_points - 1, 1)
+    return (centered.T @ centered) / denom
+
+
 def _quotient_chart_loss(
     tau_fd_coords: jnp.ndarray,
     quotient_mean: jnp.ndarray,
@@ -53,6 +65,34 @@ def _quotient_variance_floor_loss(
     variances = jnp.var(quotient_mean, axis=0)
     loss = jnp.mean(jax.nn.relu(target - variances) ** 2)
     return loss, variances
+
+
+def _quotient_spread_loss(
+    tau_fd_coords: jnp.ndarray,
+    quotient_mean: jnp.ndarray,
+    min_eig_ratio_target: float,
+    trace_cap_ratio: float,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Encourage quotient spread using rotation-aware covariance metrics."""
+    if tau_fd_coords.shape[0] <= 1 or quotient_mean.shape[0] <= 1:
+        zero = jnp.asarray(0.0, dtype=quotient_mean.dtype)
+        eigs = jnp.zeros((2,), dtype=quotient_mean.dtype)
+        return zero, eigs, eigs, zero
+
+    tau_cov = _covariance_matrix(tau_fd_coords)
+    quotient_cov = _covariance_matrix(quotient_mean)
+    tau_eigs = jnp.maximum(jnp.linalg.eigvalsh(tau_cov), 0.0)
+    quotient_eigs = jnp.maximum(jnp.linalg.eigvalsh(quotient_cov), 0.0)
+
+    tau_min = tau_eigs[0]
+    tau_trace = jnp.sum(tau_eigs)
+    quotient_min = quotient_eigs[0]
+    quotient_trace = jnp.sum(quotient_eigs)
+
+    min_eig_floor = jax.nn.relu(min_eig_ratio_target * tau_min - quotient_min) ** 2
+    trace_cap = jax.nn.relu(quotient_trace - trace_cap_ratio * tau_trace) ** 2
+    loss = min_eig_floor + 0.1 * trace_cap
+    return loss, quotient_eigs, tau_eigs, tau_trace
 
 
 @jax.jit
@@ -186,6 +226,9 @@ def _make_train_step_factorized_lattice_vae(
     chart_preserving_n_neighbors: int,
     quotient_variance_floor_weight: float,
     quotient_variance_floor_target: float,
+    quotient_spread_weight: float = 0.0,
+    quotient_min_eig_ratio_target: float = 0.20,
+    quotient_trace_cap_ratio: float = 1.50,
 ):
     """Create a JIT-compiled factorized lattice VAE training step."""
 
@@ -243,6 +286,12 @@ def _make_train_step_factorized_lattice_vae(
                 q_mean,
                 quotient_variance_floor_target,
             )
+            quotient_spread, _, _, _ = _quotient_spread_loss(
+                tau_fd_coords,
+                q_mean,
+                quotient_min_eig_ratio_target,
+                quotient_trace_cap_ratio,
+            )
             loss = (
                 mse
                 + beta * kl
@@ -252,6 +301,7 @@ def _make_train_step_factorized_lattice_vae(
                 + action_reg_weight * action_reg
                 + chart_preserving_weight * quotient_chart
                 + quotient_variance_floor_weight * quotient_variance_floor
+                + quotient_spread_weight * quotient_spread
             )
             return loss, {
                 'loss': loss,
@@ -263,6 +313,7 @@ def _make_train_step_factorized_lattice_vae(
                 'action_regularizer': action_reg,
                 'quotient_chart_loss': quotient_chart,
                 'quotient_variance_floor_loss': quotient_variance_floor,
+                'quotient_spread_loss': quotient_spread,
             }
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -328,6 +379,9 @@ def _make_eval_step_factorized_lattice_vae(
     chart_preserving_n_neighbors: int,
     quotient_variance_floor_weight: float,
     quotient_variance_floor_target: float,
+    quotient_spread_weight: float = 0.0,
+    quotient_min_eig_ratio_target: float = 0.20,
+    quotient_trace_cap_ratio: float = 1.50,
 ):
     """Create a JIT-compiled factorized lattice VAE eval step."""
 
@@ -382,6 +436,12 @@ def _make_eval_step_factorized_lattice_vae(
             q_mean,
             quotient_variance_floor_target,
         )
+        quotient_spread, _, _, _ = _quotient_spread_loss(
+            tau_fd_coords,
+            q_mean,
+            quotient_min_eig_ratio_target,
+            quotient_trace_cap_ratio,
+        )
         loss = (
             mse
             + beta * kl
@@ -391,6 +451,7 @@ def _make_eval_step_factorized_lattice_vae(
             + action_reg_weight * action_reg
             + chart_preserving_weight * quotient_chart
             + quotient_variance_floor_weight * quotient_variance_floor
+            + quotient_spread_weight * quotient_spread
         )
         return {
             'loss': loss,
@@ -402,6 +463,7 @@ def _make_eval_step_factorized_lattice_vae(
             'action_regularizer': action_reg,
             'quotient_chart_loss': quotient_chart,
             'quotient_variance_floor_loss': quotient_variance_floor,
+            'quotient_spread_loss': quotient_spread,
         }, z
 
     return eval_step_factorized_lattice_vae

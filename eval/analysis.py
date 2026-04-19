@@ -295,8 +295,11 @@ def _run_lattice_evaluation(
             f"  Quotient chart loss: {consistency['quotient_chart_loss']:.6f}"
         )
         print(
-            "  Quotient variances: "
-            f"[{consistency['quotient_var_dim0']:.6f}, {consistency['quotient_var_dim1']:.6f}]"
+            f"  Quotient spread loss: {consistency['quotient_spread_loss']:.6f}"
+        )
+        print(
+            "  Quotient covariance eigs: "
+            f"[{consistency['quotient_cov_eig_min']:.6f}, {consistency['quotient_cov_eig_max']:.6f}]"
         )
 
     # 8. SL₂(Z) modular invariance check

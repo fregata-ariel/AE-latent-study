@@ -52,6 +52,9 @@ def get_config() -> ml_collections.ConfigDict:
     config.train.chart_preserving_n_neighbors = 8
     config.train.quotient_variance_floor_weight = 0.0
     config.train.quotient_variance_floor_target = 0.15
+    config.train.quotient_spread_weight = 0.0
+    config.train.quotient_min_eig_ratio_target = 0.20
+    config.train.quotient_trace_cap_ratio = 1.50
 
     # --- Checkpoint ---
     config.checkpoint = ml_collections.ConfigDict()

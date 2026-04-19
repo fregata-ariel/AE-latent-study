@@ -15,6 +15,7 @@ from run_lattice_step2_experiments import run_all as run_step2_all
 from run_lattice_step3_experiments import run_all as run_step3_all
 from run_lattice_step4_experiments import run_all as run_step4_all
 from run_lattice_step5_experiments import run_all as run_step5_all
+from run_lattice_step6_experiments import run_all as run_step6_all
 from run_latent_topology_diagnostics import run_all as run_topology_all
 from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 from eval.analysis import run_full_evaluation
@@ -81,6 +82,9 @@ def _tiny_lattice_config(
         config.train.chart_preserving_n_neighbors = 4
         config.train.quotient_variance_floor_weight = 0.01
         config.train.quotient_variance_floor_target = 0.05
+        config.train.quotient_spread_weight = 0.0
+        config.train.quotient_min_eig_ratio_target = 0.20
+        config.train.quotient_trace_cap_ratio = 1.50
     config.train.batch_size = 16
     config.train.num_epochs = 3
     config.train.patience = 10
@@ -222,6 +226,7 @@ def test_factorized_lattice_pipeline():
         assert 'train_action_regularizer' in history
         assert 'train_quotient_chart_loss' in history
         assert 'train_quotient_variance_floor_loss' in history
+        assert 'train_quotient_spread_loss' in history
         assert 'factorized_consistency' in summary
         assert 'chart_quality' in summary
         assert 'j_correlation' in summary
@@ -229,6 +234,8 @@ def test_factorized_lattice_pipeline():
         assert 'quotient_partner_rank_percentile_mean' in summary['factorized_consistency']
         assert 'quotient_chart_loss' in summary['factorized_consistency']
         assert 'quotient_var_dim0' in summary['factorized_consistency']
+        assert 'quotient_spread_loss' in summary['factorized_consistency']
+        assert 'quotient_cov_eig_min' in summary['factorized_consistency']
 
 
 def test_step2_runner_with_tiny_config():
@@ -483,6 +490,104 @@ def test_step5_runner_with_tiny_config():
             report_text = f.read()
         assert 'Step 4 Anchor' in report_text
         assert 'q chart loss' in report_text
+
+
+def test_step6_runner_with_tiny_config():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-lattice-step6.md')
+        step3_anchor_path = os.path.join(tmpdir, 'step3_anchors.json')
+        step4_anchor_path = os.path.join(tmpdir, 'step4_anchors.json')
+
+        step3_anchors = {
+            'lattice_standard_norm_inv': {
+                'reconstruction': {'mse': 1e-7},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.98},
+                'chart_quality': {
+                    'trustworthiness': 0.85,
+                    'knn_jaccard_mean': 0.05,
+                    'effective_dimension': 1.0,
+                },
+            },
+            'lattice_vae_norm_inv_b010_l100': {
+                'reconstruction': {'mse': 8e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.96},
+                'chart_quality': {
+                    'trustworthiness': 0.85,
+                    'knn_jaccard_mean': 0.058,
+                    'effective_dimension': 2.0,
+                },
+            },
+            'lattice_vae_norm_inv_b030_l100': {
+                'reconstruction': {'mse': 8e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.81},
+                'chart_quality': {
+                    'trustworthiness': 0.86,
+                    'knn_jaccard_mean': 0.067,
+                    'effective_dimension': 1.85,
+                },
+            },
+        }
+        step4_anchors = {
+            'lattice_factorized_vae_fd_b030_q100_g030_d030': {
+                'reconstruction': {'mse': 1.7e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.92},
+                'chart_quality': {
+                    'trustworthiness': 0.848,
+                    'knn_jaccard_mean': 0.049,
+                    'effective_dimension': 1.38,
+                },
+                'factorized_consistency': {
+                    'quotient_partner_rank_percentile_mean': 0.246,
+                    'quotient_cov_eig_min': 0.03,
+                    'quotient_cov_eig_max': 0.12,
+                    'quotient_spread_loss': 0.002,
+                },
+            },
+        }
+        with open(step3_anchor_path, 'w') as f:
+            json.dump(step3_anchors, f, indent=2)
+        with open(step4_anchor_path, 'w') as f:
+            json.dump(step4_anchors, f, indent=2)
+
+        def tiny_step6_factory():
+            config = _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+            config.model.vae_beta = 0.03
+            config.train.chart_preserving_weight = 0.01
+            config.train.quotient_variance_floor_weight = 0.0
+            config.train.quotient_spread_weight = 0.03
+            config.train.quotient_min_eig_ratio_target = 0.20
+            config.train.quotient_trace_cap_ratio = 1.50
+            return config
+
+        summaries = run_step6_all(
+            base_dir=tmpdir,
+            experiments=[('lattice_factorized_vae_fd_b030_q100_g030_d030_l010_s030', tiny_step6_factory)],
+            summary_filename='tiny_step6_summaries.json',
+            report_path=report_path,
+            step3_anchor_summary_path=step3_anchor_path,
+            step4_anchor_summary_path=step4_anchor_path,
+        )
+
+        assert 'lattice_factorized_vae_fd_b030_q100_g030_d030_l010_s030' in summaries
+        summary = summaries['lattice_factorized_vae_fd_b030_q100_g030_d030_l010_s030']
+        assert 'factorized_consistency' in summary
+        assert 'quotient_spread_loss' in summary['factorized_consistency']
+        assert 'quotient_cov_eig_min' in summary['factorized_consistency']
+        assert 'quotient_cov_eig_max' in summary['factorized_consistency']
+        assert 'tau_cov_eig_min' in summary['factorized_consistency']
+        assert 'tau_cov_trace' in summary['factorized_consistency']
+
+        summary_path = os.path.join(tmpdir, 'tiny_step6_summaries.json')
+        assert os.path.exists(summary_path)
+        assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'Step 6 Runs' in report_text
+        assert 'q spread loss' in report_text or 'spread loss' in report_text
 
 
 def test_topology_runner_requires_tda_dependencies():
