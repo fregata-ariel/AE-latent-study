@@ -127,6 +127,28 @@ def _ensure_topology_defaults(config) -> None:
             setattr(config.eval, key, value)
 
 
+def _apply_config_overrides(config, overrides: dict | None):
+    """Recursively apply dict overrides onto a ConfigDict-like object."""
+    if not overrides:
+        return config
+
+    def _merge(node, patch_dict: dict):
+        for key, value in patch_dict.items():
+            if isinstance(value, dict):
+                if not hasattr(node, key) or getattr(node, key) is None:
+                    setattr(node, key, ml_collections.ConfigDict())
+                child = getattr(node, key)
+                if not isinstance(child, ml_collections.ConfigDict):
+                    child = ml_collections.ConfigDict(dict(child))
+                    setattr(node, key, child)
+                _merge(child, value)
+            else:
+                setattr(node, key, value)
+
+    _merge(config, overrides)
+    return config
+
+
 def _data_generation_key(seed: int):
     """Reproduce the trainer's data-generation PRNG split."""
     key = jax.random.PRNGKey(seed)
@@ -180,6 +202,7 @@ def _materialize_experiment(spec: dict, base_dir: str):
     if os.path.exists(config_path) and os.path.isdir(checkpoint_dir):
         config = _load_config_from_json(config_path)
         _ensure_topology_defaults(config)
+        _apply_config_overrides(config, spec.get('config_overrides'))
         state, history = _load_state_from_run(workdir, config)
     else:
         config_source = spec.get('config_source')
@@ -193,6 +216,7 @@ def _materialize_experiment(spec: dict, base_dir: str):
 
         config = _load_config(config_source)
         _ensure_topology_defaults(config)
+        _apply_config_overrides(config, spec.get('config_overrides'))
         state, history, _ = train_and_evaluate(config, workdir)
 
     train_ds, _, _ = create_splits(config, _data_generation_key(config.seed))

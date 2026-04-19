@@ -485,6 +485,65 @@ def _compute_quotient_spread_metrics(
     return loss, quotient_eigs, tau_eigs, tau_trace
 
 
+def _compute_quotient_jacobian_gram_metrics(
+    tau_coords: np.ndarray,
+    quotient_coords: np.ndarray,
+    n_neighbors: int,
+) -> float:
+    """Return a Jacobian-like local Gram matching loss."""
+    tau = np.asarray(tau_coords, dtype=float)
+    quotient = np.asarray(quotient_coords, dtype=float)
+    n_samples = tau.shape[0]
+    if n_samples <= 1:
+        return 0.0
+
+    k_use = min(max(1, int(n_neighbors)), max(1, n_samples - 1))
+    tau_dists = np.linalg.norm(tau[:, None, :] - tau[None, :, :], axis=-1)
+    tau_for_knn = tau_dists.copy()
+    np.fill_diagonal(tau_for_knn, np.inf)
+    knn_idx = np.argsort(tau_for_knn, axis=1)[:, :k_use]
+
+    tau_knn = tau[knn_idx]
+    quotient_knn = quotient[knn_idx]
+    tau_deltas = tau_knn - tau[:, None, :]
+    quotient_deltas = quotient_knn - quotient[:, None, :]
+
+    tau_gram = np.einsum('nki,nkj->nij', tau_deltas, tau_deltas) / float(k_use)
+    quotient_gram = np.einsum(
+        'nki,nkj->nij', quotient_deltas, quotient_deltas,
+    ) / float(k_use)
+
+    tau_trace = np.trace(tau_gram, axis1=-2, axis2=-1)
+    shared_scale = np.maximum(tau_trace, 1e-6)[:, None, None]
+    gram_diff = (quotient_gram / shared_scale) - (tau_gram / shared_scale)
+    return float(np.mean(np.sum(gram_diff ** 2, axis=(-2, -1))))
+
+
+def _compute_quotient_logdet_metrics(
+    tau_coords: np.ndarray,
+    quotient_coords: np.ndarray,
+    logdet_ratio_target: float,
+    trace_cap_ratio: float,
+) -> tuple[float, float, float, np.ndarray, np.ndarray, float]:
+    """Return a weak global volume guard based on logdet + trace cap."""
+    tau_cov = _compute_covariance(tau_coords)
+    quotient_cov = _compute_covariance(quotient_coords)
+    tau_eigs = np.clip(np.linalg.eigvalsh(tau_cov), a_min=0.0, a_max=None)
+    quotient_eigs = np.clip(np.linalg.eigvalsh(quotient_cov), a_min=0.0, a_max=None)
+
+    eps = 1e-6
+    eye = np.eye(tau_cov.shape[0], dtype=float)
+    tau_logdet = float(np.linalg.slogdet(tau_cov + eps * eye)[1])
+    quotient_logdet = float(np.linalg.slogdet(quotient_cov + eps * eye)[1])
+
+    tau_trace = float(np.sum(tau_eigs))
+    quotient_trace = float(np.sum(quotient_eigs))
+    logdet_floor = max((tau_logdet + np.log(logdet_ratio_target)) - quotient_logdet, 0.0) ** 2
+    trace_cap = max(quotient_trace - trace_cap_ratio * tau_trace, 0.0) ** 2
+    loss = float(logdet_floor + 0.1 * trace_cap)
+    return loss, quotient_logdet, tau_logdet, quotient_eigs, tau_eigs, tau_trace
+
+
 def _local_knn_jaccard(
     tau_coords: np.ndarray,
     latent_coords: np.ndarray,
@@ -768,6 +827,26 @@ def compute_factorized_consistency(
             trace_cap_ratio=getattr(config.train, 'quotient_trace_cap_ratio', 1.50),
         )
     )
+    quotient_jacobian_gram_loss = _compute_quotient_jacobian_gram_metrics(
+        tau_coords,
+        quotient,
+        n_neighbors=getattr(config.train, 'jacobian_n_neighbors', 8),
+    )
+    (
+        quotient_logdet_loss,
+        quotient_cov_logdet,
+        tau_cov_logdet,
+        quotient_cov_eigs_logdet,
+        tau_cov_eigs_logdet,
+        tau_cov_trace_logdet,
+    ) = _compute_quotient_logdet_metrics(
+        tau_coords,
+        quotient,
+        logdet_ratio_target=getattr(
+            config.train, 'quotient_logdet_ratio_target', 0.10,
+        ),
+        trace_cap_ratio=getattr(config.train, 'quotient_trace_cap_ratio', 1.50),
+    )
 
     return {
         'quotient_pair_distance_mean': float(np.mean(np.linalg.norm(
@@ -788,8 +867,16 @@ def compute_factorized_consistency(
         'quotient_var_dim0': float(quotient_variances[0]) if quotient_variances.size >= 1 else 0.0,
         'quotient_var_dim1': float(quotient_variances[1]) if quotient_variances.size >= 2 else 0.0,
         'quotient_spread_loss': quotient_spread_loss,
+        'quotient_jacobian_gram_loss': quotient_jacobian_gram_loss,
+        'quotient_logdet_loss': quotient_logdet_loss,
+        'quotient_cov_logdet': float(quotient_cov_logdet),
+        'tau_cov_logdet': float(tau_cov_logdet),
         'quotient_cov_eig_min': float(quotient_cov_eigs[0]) if quotient_cov_eigs.size >= 1 else 0.0,
         'quotient_cov_eig_max': float(quotient_cov_eigs[-1]) if quotient_cov_eigs.size >= 1 else 0.0,
         'tau_cov_eig_min': float(tau_cov_eigs[0]) if tau_cov_eigs.size >= 1 else 0.0,
         'tau_cov_trace': float(tau_cov_trace),
+        'quotient_cov_eig_min_logdet': float(quotient_cov_eigs_logdet[0]) if quotient_cov_eigs_logdet.size >= 1 else 0.0,
+        'quotient_cov_eig_max_logdet': float(quotient_cov_eigs_logdet[-1]) if quotient_cov_eigs_logdet.size >= 1 else 0.0,
+        'tau_cov_eig_min_logdet': float(tau_cov_eigs_logdet[0]) if tau_cov_eigs_logdet.size >= 1 else 0.0,
+        'tau_cov_trace_logdet': float(tau_cov_trace_logdet),
     }

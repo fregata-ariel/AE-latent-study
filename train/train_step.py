@@ -27,6 +27,26 @@ def _covariance_matrix(points: jnp.ndarray) -> jnp.ndarray:
     return (centered.T @ centered) / denom
 
 
+def _tau_knn_indices(
+    tau_fd_coords: jnp.ndarray,
+    n_neighbors: int,
+) -> tuple[jnp.ndarray, int]:
+    """Return kNN indices in τ_F space, excluding self."""
+    n_points = tau_fd_coords.shape[0]
+    if n_points <= 1:
+        return jnp.zeros((n_points, 0), dtype=jnp.int32), 0
+
+    k_use = min(max(1, int(n_neighbors)), max(1, n_points - 1))
+    tau_dists = _pairwise_l2(tau_fd_coords)
+    tau_dists_for_knn = jnp.where(
+        jnp.eye(n_points, dtype=bool),
+        jnp.inf,
+        tau_dists,
+    )
+    knn_idx = jnp.argsort(tau_dists_for_knn, axis=1)[:, :k_use]
+    return knn_idx, k_use
+
+
 def _quotient_chart_loss(
     tau_fd_coords: jnp.ndarray,
     quotient_mean: jnp.ndarray,
@@ -37,15 +57,9 @@ def _quotient_chart_loss(
     if n_points <= 1:
         return jnp.asarray(0.0, dtype=quotient_mean.dtype)
 
-    k_use = min(max(1, int(n_neighbors)), max(1, n_points - 1))
+    knn_idx, _ = _tau_knn_indices(tau_fd_coords, n_neighbors)
     tau_dists = _pairwise_l2(tau_fd_coords)
     quotient_dists = _pairwise_l2(quotient_mean)
-    tau_dists_for_knn = jnp.where(
-        jnp.eye(n_points, dtype=bool),
-        jnp.inf,
-        tau_dists,
-    )
-    knn_idx = jnp.argsort(tau_dists_for_knn, axis=1)[:, :k_use]
 
     tau_knn = jnp.take_along_axis(tau_dists, knn_idx, axis=1)
     quotient_knn = jnp.take_along_axis(quotient_dists, knn_idx, axis=1)
@@ -93,6 +107,73 @@ def _quotient_spread_loss(
     trace_cap = jax.nn.relu(quotient_trace - trace_cap_ratio * tau_trace) ** 2
     loss = min_eig_floor + 0.1 * trace_cap
     return loss, quotient_eigs, tau_eigs, tau_trace
+
+
+def _quotient_jacobian_gram_loss(
+    tau_fd_coords: jnp.ndarray,
+    quotient_mean: jnp.ndarray,
+    n_neighbors: int,
+) -> jnp.ndarray:
+    """Match local Gram matrices using τ_F scale as the common reference."""
+    n_points = tau_fd_coords.shape[0]
+    if n_points <= 1:
+        return jnp.asarray(0.0, dtype=quotient_mean.dtype)
+
+    knn_idx, k_use = _tau_knn_indices(tau_fd_coords, n_neighbors)
+    if k_use <= 0:
+        return jnp.asarray(0.0, dtype=quotient_mean.dtype)
+
+    tau_knn = tau_fd_coords[knn_idx]
+    quotient_knn = quotient_mean[knn_idx]
+    tau_deltas = tau_knn - tau_fd_coords[:, None, :]
+    quotient_deltas = quotient_knn - quotient_mean[:, None, :]
+
+    denom = jnp.asarray(float(k_use), dtype=quotient_mean.dtype)
+    tau_gram = jnp.einsum('nki,nkj->nij', tau_deltas, tau_deltas) / denom
+    quotient_gram = jnp.einsum(
+        'nki,nkj->nij', quotient_deltas, quotient_deltas,
+    ) / denom
+
+    tau_trace = jnp.trace(tau_gram, axis1=-2, axis2=-1)
+    shared_scale = jnp.maximum(tau_trace, 1e-6)[:, None, None]
+    gram_diff = (quotient_gram / shared_scale) - (tau_gram / shared_scale)
+    return jnp.mean(jnp.sum(gram_diff ** 2, axis=(-2, -1)))
+
+
+def _quotient_logdet_loss(
+    tau_fd_coords: jnp.ndarray,
+    quotient_mean: jnp.ndarray,
+    logdet_ratio_target: float,
+    trace_cap_ratio: float,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Guard against quotient collapse with a weak logdet floor + trace cap."""
+    if tau_fd_coords.shape[0] <= 1 or quotient_mean.shape[0] <= 1:
+        zero = jnp.asarray(0.0, dtype=quotient_mean.dtype)
+        eigs = jnp.zeros((2,), dtype=quotient_mean.dtype)
+        return zero, zero, zero, eigs, eigs
+
+    tau_cov = _covariance_matrix(tau_fd_coords)
+    quotient_cov = _covariance_matrix(quotient_mean)
+    tau_eigs = jnp.maximum(jnp.linalg.eigvalsh(tau_cov), 0.0)
+    quotient_eigs = jnp.maximum(jnp.linalg.eigvalsh(quotient_cov), 0.0)
+
+    eps = jnp.asarray(1e-6, dtype=quotient_mean.dtype)
+    eye = jnp.eye(tau_cov.shape[0], dtype=quotient_mean.dtype)
+    tau_logdet = jnp.linalg.slogdet(tau_cov + eps * eye)[1]
+    quotient_logdet = jnp.linalg.slogdet(quotient_cov + eps * eye)[1]
+
+    tau_trace = jnp.sum(tau_eigs)
+    quotient_trace = jnp.sum(quotient_eigs)
+
+    logdet_floor = jax.nn.relu(
+        (tau_logdet + jnp.log(jnp.asarray(logdet_ratio_target, dtype=quotient_mean.dtype)))
+        - quotient_logdet,
+    ) ** 2
+    trace_cap = jax.nn.relu(
+        quotient_trace - trace_cap_ratio * tau_trace,
+    ) ** 2
+    loss = logdet_floor + 0.1 * trace_cap
+    return loss, quotient_logdet, tau_logdet, quotient_eigs, tau_eigs
 
 
 @jax.jit
@@ -229,6 +310,10 @@ def _make_train_step_factorized_lattice_vae(
     quotient_spread_weight: float = 0.0,
     quotient_min_eig_ratio_target: float = 0.20,
     quotient_trace_cap_ratio: float = 1.50,
+    jacobian_gram_weight: float = 0.0,
+    jacobian_n_neighbors: int = 8,
+    quotient_logdet_weight: float = 0.0,
+    quotient_logdet_ratio_target: float = 0.10,
 ):
     """Create a JIT-compiled factorized lattice VAE training step."""
 
@@ -292,6 +377,17 @@ def _make_train_step_factorized_lattice_vae(
                 quotient_min_eig_ratio_target,
                 quotient_trace_cap_ratio,
             )
+            quotient_jacobian_gram = _quotient_jacobian_gram_loss(
+                tau_fd_coords,
+                q_mean,
+                jacobian_n_neighbors,
+            )
+            quotient_logdet, _, _, _, _ = _quotient_logdet_loss(
+                tau_fd_coords,
+                q_mean,
+                quotient_logdet_ratio_target,
+                quotient_trace_cap_ratio,
+            )
             loss = (
                 mse
                 + beta * kl
@@ -302,6 +398,8 @@ def _make_train_step_factorized_lattice_vae(
                 + chart_preserving_weight * quotient_chart
                 + quotient_variance_floor_weight * quotient_variance_floor
                 + quotient_spread_weight * quotient_spread
+                + jacobian_gram_weight * quotient_jacobian_gram
+                + quotient_logdet_weight * quotient_logdet
             )
             return loss, {
                 'loss': loss,
@@ -314,6 +412,8 @@ def _make_train_step_factorized_lattice_vae(
                 'quotient_chart_loss': quotient_chart,
                 'quotient_variance_floor_loss': quotient_variance_floor,
                 'quotient_spread_loss': quotient_spread,
+                'quotient_jacobian_gram_loss': quotient_jacobian_gram,
+                'quotient_logdet_loss': quotient_logdet,
             }
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -382,6 +482,10 @@ def _make_eval_step_factorized_lattice_vae(
     quotient_spread_weight: float = 0.0,
     quotient_min_eig_ratio_target: float = 0.20,
     quotient_trace_cap_ratio: float = 1.50,
+    jacobian_gram_weight: float = 0.0,
+    jacobian_n_neighbors: int = 8,
+    quotient_logdet_weight: float = 0.0,
+    quotient_logdet_ratio_target: float = 0.10,
 ):
     """Create a JIT-compiled factorized lattice VAE eval step."""
 
@@ -442,6 +546,17 @@ def _make_eval_step_factorized_lattice_vae(
             quotient_min_eig_ratio_target,
             quotient_trace_cap_ratio,
         )
+        quotient_jacobian_gram = _quotient_jacobian_gram_loss(
+            tau_fd_coords,
+            q_mean,
+            jacobian_n_neighbors,
+        )
+        quotient_logdet, _, _, _, _ = _quotient_logdet_loss(
+            tau_fd_coords,
+            q_mean,
+            quotient_logdet_ratio_target,
+            quotient_trace_cap_ratio,
+        )
         loss = (
             mse
             + beta * kl
@@ -452,6 +567,8 @@ def _make_eval_step_factorized_lattice_vae(
             + chart_preserving_weight * quotient_chart
             + quotient_variance_floor_weight * quotient_variance_floor
             + quotient_spread_weight * quotient_spread
+            + jacobian_gram_weight * quotient_jacobian_gram
+            + quotient_logdet_weight * quotient_logdet
         )
         return {
             'loss': loss,
@@ -464,6 +581,8 @@ def _make_eval_step_factorized_lattice_vae(
             'quotient_chart_loss': quotient_chart,
             'quotient_variance_floor_loss': quotient_variance_floor,
             'quotient_spread_loss': quotient_spread,
+            'quotient_jacobian_gram_loss': quotient_jacobian_gram,
+            'quotient_logdet_loss': quotient_logdet,
         }, z
 
     return eval_step_factorized_lattice_vae

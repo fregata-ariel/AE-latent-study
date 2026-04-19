@@ -16,8 +16,10 @@ from run_lattice_step3_experiments import run_all as run_step3_all
 from run_lattice_step4_experiments import run_all as run_step4_all
 from run_lattice_step5_experiments import run_all as run_step5_all
 from run_lattice_step6_experiments import run_all as run_step6_all
+from run_lattice_step7_experiments import run_all as run_step7_all
 from run_latent_topology_diagnostics import run_all as run_topology_all
 from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
+from run_topology_step7_followup import run_all as run_topology_step7_followup_all
 from eval.analysis import run_full_evaluation
 from train.trainer import train_and_evaluate
 
@@ -590,6 +592,121 @@ def test_step6_runner_with_tiny_config():
         assert 'q spread loss' in report_text or 'spread loss' in report_text
 
 
+def test_step7_runner_with_tiny_config():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-lattice-step7.md')
+        step3_anchor_path = os.path.join(tmpdir, 'step3_anchors.json')
+        step4_anchor_path = os.path.join(tmpdir, 'step4_anchors.json')
+        step6_anchor_path = os.path.join(tmpdir, 'step6_anchors.json')
+
+        step3_anchors = {
+            'lattice_standard_norm_inv': {
+                'reconstruction': {'mse': 1e-7},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.98},
+                'chart_quality': {
+                    'trustworthiness': 0.85,
+                    'knn_jaccard_mean': 0.05,
+                    'effective_dimension': 1.0,
+                },
+            },
+            'lattice_vae_norm_inv_b010_l100': {
+                'reconstruction': {'mse': 8e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.96},
+                'chart_quality': {
+                    'trustworthiness': 0.85,
+                    'knn_jaccard_mean': 0.058,
+                    'effective_dimension': 2.0,
+                },
+            },
+            'lattice_vae_norm_inv_b030_l100': {
+                'reconstruction': {'mse': 8e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.81},
+                'chart_quality': {
+                    'trustworthiness': 0.86,
+                    'knn_jaccard_mean': 0.067,
+                    'effective_dimension': 1.85,
+                },
+            },
+        }
+        step4_anchors = {
+            'lattice_factorized_vae_fd_b030_q100_g030_d030': {
+                'reconstruction': {'mse': 1.7e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.92},
+                'chart_quality': {
+                    'trustworthiness': 0.848,
+                    'knn_jaccard_mean': 0.049,
+                    'effective_dimension': 1.38,
+                },
+                'factorized_consistency': {
+                    'quotient_partner_rank_percentile_mean': 0.246,
+                },
+            },
+        }
+        step6_anchors = {
+            'lattice_factorized_vae_fd_b030_q100_g030_d030_l020_s030': {
+                'reconstruction': {'mse': 7.7e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.39},
+                'chart_quality': {
+                    'trustworthiness': 0.855,
+                    'knn_jaccard_mean': 0.067,
+                    'effective_dimension': 1.76,
+                },
+                'factorized_consistency': {
+                    'quotient_partner_rank_percentile_mean': 0.662,
+                },
+            },
+        }
+        for path, payload in (
+            (step3_anchor_path, step3_anchors),
+            (step4_anchor_path, step4_anchors),
+            (step6_anchor_path, step6_anchors),
+        ):
+            with open(path, 'w') as f:
+                json.dump(payload, f, indent=2)
+
+        def tiny_step7_factory():
+            config = _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+            config.model.vae_beta = 0.03
+            config.train.chart_preserving_weight = 0.0
+            config.train.quotient_spread_weight = 0.0
+            config.train.quotient_variance_floor_weight = 0.0
+            config.train.jacobian_gram_weight = 0.01
+            config.train.jacobian_n_neighbors = 4
+            config.train.quotient_logdet_weight = 0.01
+            config.train.quotient_logdet_ratio_target = 0.10
+            config.train.quotient_trace_cap_ratio = 1.50
+            return config
+
+        summaries = run_step7_all(
+            base_dir=tmpdir,
+            experiments=[('lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010', tiny_step7_factory)],
+            summary_filename='tiny_step7_summaries.json',
+            report_path=report_path,
+            step3_anchor_summary_path=step3_anchor_path,
+            step4_anchor_summary_path=step4_anchor_path,
+            step6_anchor_summary_path=step6_anchor_path,
+        )
+
+        assert 'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010' in summaries
+        summary = summaries['lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010']
+        assert 'factorized_consistency' in summary
+        assert 'quotient_jacobian_gram_loss' in summary['factorized_consistency']
+        assert 'quotient_logdet_loss' in summary['factorized_consistency']
+        assert 'quotient_cov_logdet' in summary['factorized_consistency']
+        assert 'tau_cov_logdet' in summary['factorized_consistency']
+
+        assert os.path.exists(os.path.join(tmpdir, 'tiny_step7_summaries.json'))
+        assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'Step 7 Runs' in report_text
+        assert 'jacobian loss' in report_text
+
+
 def test_topology_runner_requires_tda_dependencies():
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=False):
@@ -859,3 +976,104 @@ def test_topology_runner_factorized_uses_quotient_view():
 
         summary = combined['topology_diagnostics']['lattice_factorized_vae_fd_b010_q100_g030_d030']
         assert summary['topology_diagnostics']['full_latent_dim'] == 2
+
+
+def test_topology_runner_applies_config_overrides():
+    def fake_persistence_diagrams(points, maxdim):
+        spread = max(float(np.std(points)), 1e-3)
+        h0 = np.array([[0.0, spread]], dtype=float)
+        h1 = (
+            np.array([[0.1 * spread, 0.7 * spread]], dtype=float)
+            if maxdim >= 1 and points.shape[1] >= 2 else
+            np.zeros((0, 2), dtype=float)
+        )
+        return [h0, h1]
+
+    def fake_diagram_distances(previous, current):
+        if previous is None:
+            return None
+        return {
+            'h0_bottleneck': 0.05,
+            'h1_bottleneck': 0.07,
+            'h0_wasserstein': 0.06,
+            'h1_wasserstein': 0.08,
+            'max_bottleneck': 0.07,
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-topology-phaseA.md')
+
+        def tiny_factorized_factory():
+            return _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+
+        experiments = [
+            {
+                'name': 'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010',
+                'kind': 'lattice',
+                'config_source': tiny_factorized_factory,
+                'config_overrides': {'eval': {'ph_proj_dims': (2, 1), 'ph_random_projection_trials': 4}},
+            },
+        ]
+
+        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+            with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
+                with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
+                    combined = run_topology_all(
+                        base_dir=tmpdir,
+                        diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+                        report_path=report_path,
+                        experiments=experiments,
+                    )
+
+        dims = combined['topology_diagnostics'][
+            'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010'
+        ]['topology_diagnostics']['dims']
+        assert set(dims.keys()) == {'2', '1'}
+
+
+def test_topology_step7_followup_runner():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        summary_path = os.path.join(tmpdir, 'lattice_step7_summaries.json')
+        with open(summary_path, 'w') as f:
+            json.dump({
+                'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010': {
+                    'chart_quality': {
+                        'effective_dimension': 1.8,
+                        'knn_jaccard_mean': 0.06,
+                        'trustworthiness': 0.85,
+                    },
+                    'j_correlation': {'max_abs_logabsj_spearman': 0.91},
+                    'reconstruction': {'mse': 4e-5},
+                    'factorized_consistency': {
+                        'quotient_partner_rank_percentile_mean': 0.31,
+                        'decoder_equivariance_mse': 8e-4,
+                    },
+                },
+            }, f, indent=2)
+
+        phasea_payload = {'branch_assessment': {'branch': 'A'}}
+        phaseb_payload = {'phaseB_decision': {'primary_branch': 'A1'}}
+
+        with patch('run_topology_step7_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
+            with patch('run_topology_step7_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
+                combined = run_topology_step7_followup_all(
+                    base_dir=tmpdir,
+                    step7_summary_path=summary_path,
+                    diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics_step7'),
+                    phasea_report_path=os.path.join(tmpdir, 'walkthrough-topology-step7-phaseA.md'),
+                    phaseb_report_path=os.path.join(tmpdir, 'walkthrough-topology-step7-phaseB.md'),
+                    roadmap_path=os.path.join(tmpdir, 'ae-latent-study-roadmap-step7.md'),
+                )
+
+        assert combined['winner_name'] == 'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010'
+        assert combined['winner_used_gate'] is True
+        phasea_experiments = mock_phasea.call_args.kwargs['experiments']
+        assert phasea_experiments[-1]['name'] == combined['winner_name']
+        assert phasea_experiments[0]['config_overrides']['eval']['ph_max_samples'] == 1500
+        assert phasea_experiments[0]['config_overrides']['eval']['ph_random_projection_trials'] == 4
+        assert mock_phaseb.call_args.kwargs['experiments'][-1]['name'] == combined['winner_name']
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics_step7', 'step7_followup_summary.json'))

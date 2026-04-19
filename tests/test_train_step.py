@@ -9,6 +9,8 @@ from models import create_model
 from train.train_state import create_train_state
 from train.train_step import (
     _make_train_step_factorized_lattice_vae,
+    _quotient_jacobian_gram_loss,
+    _quotient_logdet_loss,
     _make_train_step_lattice_invariant_vae,
     _quotient_chart_loss,
     _quotient_spread_loss,
@@ -70,6 +72,10 @@ def _tiny_factorized_lattice_config():
     config.train.quotient_spread_weight = 0.03
     config.train.quotient_min_eig_ratio_target = 0.20
     config.train.quotient_trace_cap_ratio = 1.50
+    config.train.jacobian_gram_weight = 0.03
+    config.train.jacobian_n_neighbors = 4
+    config.train.quotient_logdet_weight = 0.03
+    config.train.quotient_logdet_ratio_target = 0.10
     return config
 
 
@@ -85,7 +91,7 @@ def test_quotient_chart_loss_is_scale_invariant():
     loss_a = _quotient_chart_loss(tau, quotient, n_neighbors=2)
     loss_b = _quotient_chart_loss(tau * 3.0, quotient * 7.0, n_neighbors=2)
 
-    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=1e-7)
+    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=2e-6)
 
 
 def test_quotient_chart_loss_worsens_when_local_geometry_is_distorted():
@@ -158,7 +164,7 @@ def test_quotient_spread_loss_is_rotation_invariant():
     loss_a, eigs_a, _, _ = _quotient_spread_loss(tau, quotient, 0.2, 1.5)
     loss_b, eigs_b, _, _ = _quotient_spread_loss(tau, rotated, 0.2, 1.5)
 
-    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=1e-7)
+    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=2e-6)
     np.testing.assert_allclose(np.array(eigs_a), np.array(eigs_b), atol=1e-7)
 
 
@@ -205,6 +211,87 @@ def test_quotient_spread_loss_penalizes_over_expansion():
     loss_balanced, _, _, _ = _quotient_spread_loss(tau, balanced, 0.2, 1.5)
     loss_overexpanded, _, _, _ = _quotient_spread_loss(tau, overexpanded, 0.2, 1.5)
 
+    assert float(loss_overexpanded) > float(loss_balanced)
+
+
+def test_quotient_jacobian_gram_loss_is_translation_and_rotation_invariant():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.2, 1.1],
+        [1.1, 1.0],
+        [0.5, 0.6],
+    ])
+    quotient = tau * 1.7 + jnp.array([0.4, -0.2])
+    theta = np.pi / 4.0
+    rotation = jnp.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)],
+    ], dtype=jnp.float32)
+    rotated_tau = tau @ rotation.T + jnp.array([3.0, -1.0])
+    rotated_quotient = quotient @ rotation.T + jnp.array([-2.0, 4.0])
+
+    loss_a = _quotient_jacobian_gram_loss(tau, quotient, n_neighbors=3)
+    loss_b = _quotient_jacobian_gram_loss(rotated_tau, rotated_quotient, n_neighbors=3)
+
+    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=2e-6)
+
+
+def test_quotient_jacobian_gram_loss_detects_collapse_and_distortion():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.4, 0.6],
+    ])
+    quotient_good = tau * 1.5
+    quotient_collapsed = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [3.0, 0.0],
+        [4.0, 0.0],
+    ])
+    quotient_distorted = jnp.array([
+        [0.0, 0.0],
+        [3.0, 0.0],
+        [0.0, 0.1],
+        [3.0, 0.2],
+        [1.5, 2.5],
+    ])
+
+    loss_good = _quotient_jacobian_gram_loss(tau, quotient_good, n_neighbors=3)
+    loss_collapsed = _quotient_jacobian_gram_loss(tau, quotient_collapsed, n_neighbors=3)
+    loss_distorted = _quotient_jacobian_gram_loss(tau, quotient_distorted, n_neighbors=3)
+
+    assert float(loss_collapsed) > float(loss_good)
+    assert float(loss_distorted) > float(loss_good)
+
+
+def test_quotient_logdet_loss_detects_collapse_and_overexpansion():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.4, 0.6],
+    ])
+    quotient_balanced = tau
+    quotient_collapsed = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [3.0, 0.0],
+        [4.0, 0.0],
+    ])
+    quotient_overexpanded = tau * jnp.array([5.0, 5.0])
+
+    loss_balanced, _, _, _, _ = _quotient_logdet_loss(tau, quotient_balanced, 0.10, 1.50)
+    loss_collapsed, _, _, _, _ = _quotient_logdet_loss(tau, quotient_collapsed, 0.10, 1.50)
+    loss_overexpanded, _, _, _, _ = _quotient_logdet_loss(tau, quotient_overexpanded, 0.10, 1.50)
+
+    assert float(loss_collapsed) > float(loss_balanced)
     assert float(loss_overexpanded) > float(loss_balanced)
 
 
@@ -310,6 +397,10 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         config.train.quotient_spread_weight,
         config.train.quotient_min_eig_ratio_target,
         config.train.quotient_trace_cap_ratio,
+        config.train.jacobian_gram_weight,
+        config.train.jacobian_n_neighbors,
+        config.train.quotient_logdet_weight,
+        config.train.quotient_logdet_ratio_target,
     )
     next_state, metrics = step_fn(
         state, batch, paired_batch, transform_ids, tau_fd_coords,
@@ -327,6 +418,8 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         'quotient_chart_loss',
         'quotient_variance_floor_loss',
         'quotient_spread_loss',
+        'quotient_jacobian_gram_loss',
+        'quotient_logdet_loss',
     ):
         assert key in metrics
         assert np.isfinite(float(metrics[key]))

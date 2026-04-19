@@ -298,6 +298,12 @@ def _run_lattice_evaluation(
             f"  Quotient spread loss: {consistency['quotient_spread_loss']:.6f}"
         )
         print(
+            f"  Quotient Jacobian loss: {consistency.get('quotient_jacobian_gram_loss', 0.0):.6f}"
+        )
+        print(
+            f"  Quotient logdet loss: {consistency.get('quotient_logdet_loss', 0.0):.6f}"
+        )
+        print(
             "  Quotient covariance eigs: "
             f"[{consistency['quotient_cov_eig_min']:.6f}, {consistency['quotient_cov_eig_max']:.6f}]"
         )
