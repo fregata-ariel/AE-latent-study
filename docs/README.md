@@ -13,7 +13,8 @@
 
 1. [研究総括](current/ae-latent-study-summary.md)
 2. [現行ロードマップ](current/ae-latent-study-roadmap.md)
-3. 必要に応じて archive の step / topology walkthrough
+3. [ドキュメント運用ルール](DOCS_RULEBOOK.md)
+4. 必要に応じて archive の step / topology walkthrough
 
 ## Current
 
@@ -21,6 +22,10 @@
 - [ae-latent-study-roadmap.md](current/ae-latent-study-roadmap.md)
 
 これらの文書は `docs_src/` 以下の分割 Markdown を `mdsplit compose` で再構成したものを canonical output とする。
+
+## Documentation Rules
+
+- [DOCS_RULEBOOK.md](DOCS_RULEBOOK.md)
 
 ## Background
 
