@@ -10,6 +10,8 @@ from train.train_state import create_train_state
 from train.train_step import (
     _make_train_step_factorized_lattice_vae,
     _make_train_step_lattice_invariant_vae,
+    _quotient_chart_loss,
+    _quotient_variance_floor_loss,
     _make_train_step_vae,
 )
 
@@ -60,7 +62,71 @@ def _tiny_factorized_lattice_config():
     config.train.gauge_equivariance_weight = 0.03
     config.train.decoder_equivariance_weight = 0.03
     config.train.gauge_action_reg_weight = 1e-4
+    config.train.chart_preserving_weight = 0.03
+    config.train.chart_preserving_n_neighbors = 4
+    config.train.quotient_variance_floor_weight = 0.01
+    config.train.quotient_variance_floor_target = 0.15
     return config
+
+
+def test_quotient_chart_loss_is_scale_invariant():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+    ])
+    quotient = tau * 2.5
+
+    loss_a = _quotient_chart_loss(tau, quotient, n_neighbors=2)
+    loss_b = _quotient_chart_loss(tau * 3.0, quotient * 7.0, n_neighbors=2)
+
+    np.testing.assert_allclose(np.array(loss_a), np.array(loss_b), atol=1e-7)
+
+
+def test_quotient_chart_loss_worsens_when_local_geometry_is_distorted():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.5, 0.4],
+    ])
+    quotient_good = tau * 1.7
+    quotient_bad = jnp.array([
+        [0.0, 0.0],
+        [5.0, 0.0],
+        [0.0, 0.1],
+        [5.0, 0.2],
+        [0.2, 3.0],
+    ])
+
+    loss_good = _quotient_chart_loss(tau, quotient_good, n_neighbors=3)
+    loss_bad = _quotient_chart_loss(tau, quotient_bad, n_neighbors=3)
+
+    assert float(loss_bad) > float(loss_good)
+
+
+def test_quotient_variance_floor_loss_detects_collapse():
+    collapsed = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [3.0, 0.0],
+    ])
+    spread = jnp.array([
+        [0.0, 0.0],
+        [1.0, 1.0],
+        [2.0, -1.0],
+        [3.0, 0.5],
+    ])
+
+    collapsed_loss, _ = _quotient_variance_floor_loss(collapsed, target=0.15)
+    spread_loss, _ = _quotient_variance_floor_loss(spread, target=0.15)
+
+    assert float(collapsed_loss) > 0.0
+    assert float(spread_loss) >= 0.0
+    assert float(spread_loss) < float(collapsed_loss)
 
 
 def test_train_step_lattice_invariant_vae_reports_all_terms():
@@ -140,6 +206,16 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         pair_key, (config.train.batch_size, config.data.signal_length),
     )
     transform_ids = jnp.array([0, 1, 2, 0, 1, 2, 0, 1], dtype=jnp.int32)
+    tau_fd_coords = jnp.array([
+        [-0.4, 1.1],
+        [-0.2, 1.2],
+        [0.1, 1.4],
+        [0.3, 1.6],
+        [-0.1, 1.8],
+        [0.2, 2.0],
+        [-0.3, 2.2],
+        [0.0, 2.4],
+    ], dtype=jnp.float32)
 
     step_fn = _make_train_step_factorized_lattice_vae(
         model,
@@ -148,8 +224,14 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         config.train.gauge_equivariance_weight,
         config.train.decoder_equivariance_weight,
         config.train.gauge_action_reg_weight,
+        config.train.chart_preserving_weight,
+        config.train.chart_preserving_n_neighbors,
+        config.train.quotient_variance_floor_weight,
+        config.train.quotient_variance_floor_target,
     )
-    next_state, metrics = step_fn(state, batch, paired_batch, transform_ids)
+    next_state, metrics = step_fn(
+        state, batch, paired_batch, transform_ids, tau_fd_coords,
+    )
 
     assert next_state.rng.shape == state.rng.shape
     for key in (
@@ -160,6 +242,8 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         'gauge_equivariance',
         'decoder_equivariance',
         'action_regularizer',
+        'quotient_chart_loss',
+        'quotient_variance_floor_loss',
     ):
         assert key in metrics
         assert np.isfinite(float(metrics[key]))

@@ -15,6 +15,7 @@ from data.generation import (
     make_cyclic_modular_partners,
     modular_transform_ids,
     normalize_lattice_signals,
+    reduce_to_fundamental_domain,
 )
 from models import create_model
 from train.train_state import create_train_state
@@ -63,6 +64,10 @@ def _evaluate(
             config.train.gauge_equivariance_weight,
             config.train.decoder_equivariance_weight,
             config.train.gauge_action_reg_weight,
+            getattr(config.train, 'chart_preserving_weight', 0.0),
+            getattr(config.train, 'chart_preserving_n_neighbors', 8),
+            getattr(config.train, 'quotient_variance_floor_weight', 0.0),
+            getattr(config.train, 'quotient_variance_floor_target', 0.15),
         )
     elif use_invariance and is_vae:
         eval_fn = _make_eval_step_lattice_invariant_vae(
@@ -80,8 +85,9 @@ def _evaluate(
         if use_invariance:
             paired_batch, transform_ids = _make_lattice_partner_batch(batch_thetas, config)
             if is_factorized:
+                tau_fd_coords = _reduce_tau_batch_to_fd_coords(batch_thetas)
                 metrics, _ = eval_fn(
-                    state, batch_signals, paired_batch, transform_ids,
+                    state, batch_signals, paired_batch, transform_ids, tau_fd_coords,
                 )
             else:
                 metrics, _ = eval_fn(state, batch_signals, paired_batch)
@@ -145,6 +151,16 @@ def _make_lattice_partner_batch(
         method=getattr(config.data, 'lattice_signal_normalization', 'none'),
     )
     return normalized, jnp.asarray(modular_transform_ids(transform_names))
+
+
+def _reduce_tau_batch_to_fd_coords(
+    batch_thetas: jnp.ndarray,
+) -> jnp.ndarray:
+    """Reduce a batch of lattice τ values to fundamental-domain coordinates."""
+    tau = np.array(batch_thetas[:, 0]) + 1j * np.array(batch_thetas[:, 1])
+    tau_fd = reduce_to_fundamental_domain(tau)
+    coords = np.stack([tau_fd.real, tau_fd.imag], axis=-1)
+    return jnp.asarray(coords)
 
 
 def train_and_evaluate(
@@ -216,6 +232,10 @@ def train_and_evaluate(
             config.train.gauge_equivariance_weight,
             config.train.decoder_equivariance_weight,
             config.train.gauge_action_reg_weight,
+            getattr(config.train, 'chart_preserving_weight', 0.0),
+            getattr(config.train, 'chart_preserving_n_neighbors', 8),
+            getattr(config.train, 'quotient_variance_floor_weight', 0.0),
+            getattr(config.train, 'quotient_variance_floor_target', 0.15),
         )
     elif is_vae and use_invariance:
         train_step_fn = _make_train_step_lattice_invariant_vae(
@@ -245,6 +265,8 @@ def train_and_evaluate(
         history['train_gauge_equivariance'] = []
         history['train_decoder_equivariance'] = []
         history['train_action_regularizer'] = []
+        history['train_quotient_chart_loss'] = []
+        history['train_quotient_variance_floor_loss'] = []
 
     best_val_loss = float('inf')
     best_epoch = -1
@@ -265,8 +287,9 @@ def train_and_evaluate(
                     batch_thetas, config,
                 )
                 if is_factorized:
+                    tau_fd_coords = _reduce_tau_batch_to_fd_coords(batch_thetas)
                     state, metrics = train_step_fn(
-                        state, batch_signals, paired_batch, transform_ids,
+                        state, batch_signals, paired_batch, transform_ids, tau_fd_coords,
                     )
                 else:
                     state, metrics = train_step_fn(state, batch_signals, paired_batch)
@@ -303,6 +326,12 @@ def train_and_evaluate(
             )
             history['train_action_regularizer'].append(
                 train_metrics.get('action_regularizer', 0.0),
+            )
+            history['train_quotient_chart_loss'].append(
+                train_metrics.get('quotient_chart_loss', 0.0),
+            )
+            history['train_quotient_variance_floor_loss'].append(
+                train_metrics.get('quotient_variance_floor_loss', 0.0),
             )
 
         # Logging

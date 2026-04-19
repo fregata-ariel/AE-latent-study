@@ -408,6 +408,49 @@ def _compute_partner_preservation_metrics(
     }
 
 
+def _compute_quotient_chart_loss_numpy(
+    tau_coords: np.ndarray,
+    quotient_coords: np.ndarray,
+    n_neighbors: int,
+) -> float:
+    """Match normalized local τ_F and quotient distances using a kNN graph."""
+    tau = np.asarray(tau_coords, dtype=float)
+    quotient = np.asarray(quotient_coords, dtype=float)
+    n_samples = tau.shape[0]
+    if n_samples <= 1:
+        return 0.0
+
+    k_use = min(max(1, int(n_neighbors)), max(1, n_samples - 1))
+    tau_dists = np.linalg.norm(tau[:, None, :] - tau[None, :, :], axis=-1)
+    quotient_dists = np.linalg.norm(
+        quotient[:, None, :] - quotient[None, :, :], axis=-1,
+    )
+    tau_for_knn = tau_dists.copy()
+    np.fill_diagonal(tau_for_knn, np.inf)
+    knn_idx = np.argsort(tau_for_knn, axis=1)[:, :k_use]
+
+    tau_knn = np.take_along_axis(tau_dists, knn_idx, axis=1)
+    quotient_knn = np.take_along_axis(quotient_dists, knn_idx, axis=1)
+    tau_scale = np.maximum(np.mean(tau_knn, axis=1, keepdims=True), 1e-6)
+    quotient_scale = np.maximum(np.mean(quotient_knn, axis=1, keepdims=True), 1e-6)
+    return float(np.mean(((tau_knn / tau_scale) - (quotient_knn / quotient_scale)) ** 2))
+
+
+def _compute_quotient_variance_floor_metrics(
+    quotient_coords: np.ndarray,
+    target: float,
+) -> tuple[float, np.ndarray]:
+    """Return variance-floor loss and per-dimension quotient variances."""
+    quotient = np.asarray(quotient_coords, dtype=float)
+    if quotient.ndim != 2 or quotient.shape[0] == 0:
+        variances = np.zeros(0, dtype=float)
+        return 0.0, variances
+
+    variances = np.var(quotient, axis=0)
+    loss = float(np.mean(np.maximum(target - variances, 0.0) ** 2))
+    return loss, variances
+
+
 def _local_knn_jaccard(
     tau_coords: np.ndarray,
     latent_coords: np.ndarray,
@@ -610,6 +653,7 @@ def compute_factorized_consistency(
         generate_lattice_theta,
         make_cyclic_modular_partners,
         normalize_lattice_signals,
+        reduce_to_fundamental_domain,
     )
 
     if config.model.latent_type != 'factorized_vae':
@@ -669,6 +713,17 @@ def compute_factorized_consistency(
         quotient_partner,
         n_neighbors=getattr(config.eval, 'chart_n_neighbors', 8),
     )
+    tau_fd = np.asarray(reduce_to_fundamental_domain(tau_values), dtype=complex).reshape(-1)
+    tau_coords = np.stack([tau_fd.real, tau_fd.imag], axis=-1)
+    quotient_chart_loss = _compute_quotient_chart_loss_numpy(
+        tau_coords,
+        quotient,
+        n_neighbors=getattr(config.train, 'chart_preserving_n_neighbors', 8),
+    )
+    quotient_variance_floor_loss, quotient_variances = _compute_quotient_variance_floor_metrics(
+        quotient,
+        target=getattr(config.train, 'quotient_variance_floor_target', 0.15),
+    )
 
     return {
         'quotient_pair_distance_mean': float(np.mean(np.linalg.norm(
@@ -684,4 +739,8 @@ def compute_factorized_consistency(
             (np.asarray(partner_recon) - np.asarray(partner_signals)) ** 2,
         )),
         'gauge_action_reg': float(action_reg),
+        'quotient_chart_loss': quotient_chart_loss,
+        'quotient_variance_floor_loss': quotient_variance_floor_loss,
+        'quotient_var_dim0': float(quotient_variances[0]) if quotient_variances.size >= 1 else 0.0,
+        'quotient_var_dim1': float(quotient_variances[1]) if quotient_variances.size >= 2 else 0.0,
     }

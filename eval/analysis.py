@@ -291,6 +291,13 @@ def _run_lattice_evaluation(
         print(
             f"  Decoder equivariance MSE: {consistency['decoder_equivariance_mse']:.6f}"
         )
+        print(
+            f"  Quotient chart loss: {consistency['quotient_chart_loss']:.6f}"
+        )
+        print(
+            "  Quotient variances: "
+            f"[{consistency['quotient_var_dim0']:.6f}, {consistency['quotient_var_dim1']:.6f}]"
+        )
 
     # 8. SL₂(Z) modular invariance check
     print("  Checking modular invariance...")

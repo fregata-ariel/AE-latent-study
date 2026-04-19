@@ -14,6 +14,7 @@ from configs.lattice_default import get_config as get_lattice_config
 from run_lattice_step2_experiments import run_all as run_step2_all
 from run_lattice_step3_experiments import run_all as run_step3_all
 from run_lattice_step4_experiments import run_all as run_step4_all
+from run_lattice_step5_experiments import run_all as run_step5_all
 from run_latent_topology_diagnostics import run_all as run_topology_all
 from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 from eval.analysis import run_full_evaluation
@@ -76,6 +77,10 @@ def _tiny_lattice_config(
         config.train.gauge_equivariance_weight = 0.03
         config.train.decoder_equivariance_weight = 0.03
         config.train.gauge_action_reg_weight = 1e-4
+        config.train.chart_preserving_weight = 0.03
+        config.train.chart_preserving_n_neighbors = 4
+        config.train.quotient_variance_floor_weight = 0.01
+        config.train.quotient_variance_floor_target = 0.05
     config.train.batch_size = 16
     config.train.num_epochs = 3
     config.train.patience = 10
@@ -215,11 +220,15 @@ def test_factorized_lattice_pipeline():
         assert 'train_gauge_equivariance' in history
         assert 'train_decoder_equivariance' in history
         assert 'train_action_regularizer' in history
+        assert 'train_quotient_chart_loss' in history
+        assert 'train_quotient_variance_floor_loss' in history
         assert 'factorized_consistency' in summary
         assert 'chart_quality' in summary
         assert 'j_correlation' in summary
         assert 'modular_invariance' in summary
         assert 'quotient_partner_rank_percentile_mean' in summary['factorized_consistency']
+        assert 'quotient_chart_loss' in summary['factorized_consistency']
+        assert 'quotient_var_dim0' in summary['factorized_consistency']
 
 
 def test_step2_runner_with_tiny_config():
@@ -413,6 +422,67 @@ def test_step4_runner_with_tiny_config():
             report_text = f.read()
         assert 'Step 3 Anchors' in report_text
         assert 'Selected run' in report_text
+
+
+def test_step5_runner_with_tiny_config():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-lattice-step5.md')
+        anchor_path = os.path.join(tmpdir, 'step4_anchors.json')
+
+        anchor_summaries = {
+            'lattice_factorized_vae_fd_b030_q100_g030_d030': {
+                'reconstruction': {'mse': 1.7e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.92},
+                'chart_quality': {
+                    'trustworthiness': 0.848,
+                    'knn_jaccard_mean': 0.049,
+                    'effective_dimension': 1.38,
+                },
+                'factorized_consistency': {
+                    'quotient_partner_rank_percentile_mean': 0.246,
+                    'quotient_var_dim0': 0.12,
+                    'quotient_var_dim1': 0.04,
+                },
+            },
+        }
+        with open(anchor_path, 'w') as f:
+            json.dump(anchor_summaries, f, indent=2)
+
+        def tiny_step5_factory():
+            config = _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+            config.model.vae_beta = 0.03
+            config.train.chart_preserving_weight = 0.03
+            config.train.quotient_variance_floor_weight = 0.01
+            config.train.quotient_variance_floor_target = 0.05
+            return config
+
+        summaries = run_step5_all(
+            base_dir=tmpdir,
+            experiments=[('lattice_factorized_vae_fd_b030_q100_g030_d030_c030_v010', tiny_step5_factory)],
+            summary_filename='tiny_step5_summaries.json',
+            report_path=report_path,
+            anchor_summary_path=anchor_path,
+        )
+
+        assert 'lattice_factorized_vae_fd_b030_q100_g030_d030_c030_v010' in summaries
+        summary = summaries['lattice_factorized_vae_fd_b030_q100_g030_d030_c030_v010']
+        assert 'factorized_consistency' in summary
+        assert 'quotient_chart_loss' in summary['factorized_consistency']
+        assert 'quotient_variance_floor_loss' in summary['factorized_consistency']
+        assert 'quotient_var_dim0' in summary['factorized_consistency']
+        assert 'quotient_var_dim1' in summary['factorized_consistency']
+
+        summary_path = os.path.join(tmpdir, 'tiny_step5_summaries.json')
+        assert os.path.exists(summary_path)
+        assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'Step 4 Anchor' in report_text
+        assert 'q chart loss' in report_text
 
 
 def test_topology_runner_requires_tda_dependencies():

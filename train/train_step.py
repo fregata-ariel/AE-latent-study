@@ -9,6 +9,52 @@ from train.train_state import VAETrainState
 from models.vae import VAE
 
 
+def _pairwise_l2(points: jnp.ndarray) -> jnp.ndarray:
+    """Compute pairwise Euclidean distances for a point cloud."""
+    diffs = points[:, None, :] - points[None, :, :]
+    return jnp.sqrt(jnp.sum(diffs ** 2, axis=-1) + 1e-12)
+
+
+def _quotient_chart_loss(
+    tau_fd_coords: jnp.ndarray,
+    quotient_mean: jnp.ndarray,
+    n_neighbors: int,
+) -> jnp.ndarray:
+    """Match normalized local τ_F distances and quotient distances."""
+    n_points = tau_fd_coords.shape[0]
+    if n_points <= 1:
+        return jnp.asarray(0.0, dtype=quotient_mean.dtype)
+
+    k_use = min(max(1, int(n_neighbors)), max(1, n_points - 1))
+    tau_dists = _pairwise_l2(tau_fd_coords)
+    quotient_dists = _pairwise_l2(quotient_mean)
+    tau_dists_for_knn = jnp.where(
+        jnp.eye(n_points, dtype=bool),
+        jnp.inf,
+        tau_dists,
+    )
+    knn_idx = jnp.argsort(tau_dists_for_knn, axis=1)[:, :k_use]
+
+    tau_knn = jnp.take_along_axis(tau_dists, knn_idx, axis=1)
+    quotient_knn = jnp.take_along_axis(quotient_dists, knn_idx, axis=1)
+
+    tau_scale = jnp.maximum(jnp.mean(tau_knn, axis=1, keepdims=True), 1e-6)
+    quotient_scale = jnp.maximum(
+        jnp.mean(quotient_knn, axis=1, keepdims=True), 1e-6,
+    )
+    return jnp.mean(((tau_knn / tau_scale) - (quotient_knn / quotient_scale)) ** 2)
+
+
+def _quotient_variance_floor_loss(
+    quotient_mean: jnp.ndarray,
+    target: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Encourage both quotient dimensions to maintain a minimum variance."""
+    variances = jnp.var(quotient_mean, axis=0)
+    loss = jnp.mean(jax.nn.relu(target - variances) ** 2)
+    return loss, variances
+
+
 @jax.jit
 def train_step_ae(
     state: TrainState,
@@ -136,6 +182,10 @@ def _make_train_step_factorized_lattice_vae(
     gauge_weight: float,
     decoder_weight: float,
     action_reg_weight: float,
+    chart_preserving_weight: float,
+    chart_preserving_n_neighbors: int,
+    quotient_variance_floor_weight: float,
+    quotient_variance_floor_target: float,
 ):
     """Create a JIT-compiled factorized lattice VAE training step."""
 
@@ -145,6 +195,7 @@ def _make_train_step_factorized_lattice_vae(
         batch: jnp.ndarray,
         paired_batch: jnp.ndarray,
         transform_ids: jnp.ndarray,
+        tau_fd_coords: jnp.ndarray,
     ) -> tuple[VAETrainState, dict[str, jnp.ndarray]]:
         rng, step_rng = jax.random.split(state.rng)
 
@@ -183,6 +234,15 @@ def _make_train_step_factorized_lattice_vae(
                 jnp.sum((g_pair_mean - acted_gauge) ** 2, axis=-1),
             )
             decoder_equivariance = jnp.mean((paired_recon - paired_batch) ** 2)
+            quotient_chart = _quotient_chart_loss(
+                tau_fd_coords,
+                q_mean,
+                chart_preserving_n_neighbors,
+            )
+            quotient_variance_floor, _ = _quotient_variance_floor_loss(
+                q_mean,
+                quotient_variance_floor_target,
+            )
             loss = (
                 mse
                 + beta * kl
@@ -190,6 +250,8 @@ def _make_train_step_factorized_lattice_vae(
                 + gauge_weight * gauge_equivariance
                 + decoder_weight * decoder_equivariance
                 + action_reg_weight * action_reg
+                + chart_preserving_weight * quotient_chart
+                + quotient_variance_floor_weight * quotient_variance_floor
             )
             return loss, {
                 'loss': loss,
@@ -199,6 +261,8 @@ def _make_train_step_factorized_lattice_vae(
                 'gauge_equivariance': gauge_equivariance,
                 'decoder_equivariance': decoder_equivariance,
                 'action_regularizer': action_reg,
+                'quotient_chart_loss': quotient_chart,
+                'quotient_variance_floor_loss': quotient_variance_floor,
             }
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -260,6 +324,10 @@ def _make_eval_step_factorized_lattice_vae(
     gauge_weight: float,
     decoder_weight: float,
     action_reg_weight: float,
+    chart_preserving_weight: float,
+    chart_preserving_n_neighbors: int,
+    quotient_variance_floor_weight: float,
+    quotient_variance_floor_target: float,
 ):
     """Create a JIT-compiled factorized lattice VAE eval step."""
 
@@ -269,6 +337,7 @@ def _make_eval_step_factorized_lattice_vae(
         batch: jnp.ndarray,
         paired_batch: jnp.ndarray,
         transform_ids: jnp.ndarray,
+        tau_fd_coords: jnp.ndarray,
     ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
         x_hat, z, q_mean, q_logvar, g_mean, g_logvar = state.apply_fn(
             {'params': state.params}, batch, state.rng, deterministic=True,
@@ -304,6 +373,15 @@ def _make_eval_step_factorized_lattice_vae(
             jnp.sum((g_pair_mean - acted_gauge) ** 2, axis=-1),
         )
         decoder_equivariance = jnp.mean((paired_recon - paired_batch) ** 2)
+        quotient_chart = _quotient_chart_loss(
+            tau_fd_coords,
+            q_mean,
+            chart_preserving_n_neighbors,
+        )
+        quotient_variance_floor, _ = _quotient_variance_floor_loss(
+            q_mean,
+            quotient_variance_floor_target,
+        )
         loss = (
             mse
             + beta * kl
@@ -311,6 +389,8 @@ def _make_eval_step_factorized_lattice_vae(
             + gauge_weight * gauge_equivariance
             + decoder_weight * decoder_equivariance
             + action_reg_weight * action_reg
+            + chart_preserving_weight * quotient_chart
+            + quotient_variance_floor_weight * quotient_variance_floor
         )
         return {
             'loss': loss,
@@ -320,6 +400,8 @@ def _make_eval_step_factorized_lattice_vae(
             'gauge_equivariance': gauge_equivariance,
             'decoder_equivariance': decoder_equivariance,
             'action_regularizer': action_reg,
+            'quotient_chart_loss': quotient_chart,
+            'quotient_variance_floor_loss': quotient_variance_floor,
         }, z
 
     return eval_step_factorized_lattice_vae
