@@ -1,0 +1,52 @@
+{
+  "source_file": "docs/current/ae-latent-study-roadmap.md",
+  "base_level": 1,
+  "metadata": {
+    "preamble_file": "preamble.md"
+  },
+  "sections": [
+    {
+      "title": "Current Node",
+      "file": "sections/01-current-node.md",
+      "order": 0,
+      "children": []
+    },
+    {
+      "title": "Active Branches",
+      "file": "sections/02-active-branches.md",
+      "order": 1,
+      "children": [
+        {
+          "title": "A2. Chart-Preserving Regularizer Redesign",
+          "file": "sections/02-01-a2.md",
+          "order": 0,
+          "children": []
+        },
+        {
+          "title": "A1. Previous Validated Branch",
+          "file": "sections/02-02-a1.md",
+          "order": 1,
+          "children": []
+        },
+        {
+          "title": "A3. Sampling Redesign",
+          "file": "sections/02-03-a3.md",
+          "order": 2,
+          "children": []
+        }
+      ]
+    },
+    {
+      "title": "Parked Branches",
+      "file": "sections/03-parked-branches.md",
+      "order": 2,
+      "children": []
+    },
+    {
+      "title": "Update Trigger",
+      "file": "sections/04-update-trigger.md",
+      "order": 3,
+      "children": []
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+- `non-Euclidean latent`
+  - parked until the Euclidean quotient-chart path is exhausted
+- `latent function space / spectral basis`
+  - parked until the quotient chart itself is stable enough to support a basis-level discussion
+- `T^2 × R_+ control`
+  - parked unless torus control is no longer sufficient for diagnostics

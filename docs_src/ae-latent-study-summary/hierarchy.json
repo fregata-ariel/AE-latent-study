@@ -1,0 +1,88 @@
+{
+  "source_file": "docs/current/ae-latent-study-summary.md",
+  "base_level": 1,
+  "metadata": {
+    "preamble_file": "preamble.md"
+  },
+  "sections": [
+    {
+      "title": "概要",
+      "file": "sections/01-overview.md",
+      "order": 0,
+      "children": []
+    },
+    {
+      "title": "研究の問い",
+      "file": "sections/02-research-question.md",
+      "order": 1,
+      "children": []
+    },
+    {
+      "title": "前史",
+      "file": "sections/03-prehistory.md",
+      "order": 2,
+      "children": []
+    },
+    {
+      "title": "Lattice 実験の流れ",
+      "file": "sections/04-lattice-flow.md",
+      "order": 3,
+      "children": [
+        {
+          "title": "Step 1: 1D 退化の確認",
+          "file": "sections/04-01-step1.md",
+          "order": 0,
+          "children": []
+        },
+        {
+          "title": "Step 2: Orbit Gluing の確立",
+          "file": "sections/04-02-step2.md",
+          "order": 1,
+          "children": []
+        },
+        {
+          "title": "Step 3: VAE + Invariance で 2D chart の兆候を得る",
+          "file": "sections/04-03-step3.md",
+          "order": 2,
+          "children": []
+        },
+        {
+          "title": "Topology Phase A/B: k=2 安定と k=1 崩壊",
+          "file": "sections/04-04-topology.md",
+          "order": 3,
+          "children": []
+        },
+        {
+          "title": "Step 4: Factorized Latent の明示化",
+          "file": "sections/04-05-step4.md",
+          "order": 4,
+          "children": []
+        },
+        {
+          "title": "Step 5: Quotient 正則化の失敗",
+          "file": "sections/04-06-step5.md",
+          "order": 5,
+          "children": []
+        }
+      ]
+    },
+    {
+      "title": "現在の理解",
+      "file": "sections/05-current-understanding.md",
+      "order": 4,
+      "children": []
+    },
+    {
+      "title": "今後の分岐",
+      "file": "sections/06-next-branches.md",
+      "order": 5,
+      "children": []
+    },
+    {
+      "title": "参照マップ",
+      "file": "sections/07-reference-map.md",
+      "order": 6,
+      "children": []
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+- Update this roadmap whenever one of the following changes substantially:
+  - `docs/current/ae-latent-study-summary.md`
+  - `runs/lattice_step5_summaries.json`
+  - `runs/topology_diagnostics_step4/phaseB_comparison_summary.json`
+- Keep `A2` as the recommendation if:
+  - new quotient regularizer candidates still need to be evaluated, or
+  - Step 5 remains the latest evidence on the factorized scaffold
+- Re-promote `A1` only if:
+  - a revised quotient regularizer preserves partner rank / `j` while pushing quotient geometry closer to a stable 2D chart
+- Promote `A3` if:
+  - wide-sampling evidence becomes clearly stronger than the fundamental-domain branch after the A2 redesign cycle
