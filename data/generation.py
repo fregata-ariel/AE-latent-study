@@ -9,6 +9,9 @@ import ml_collections
 
 
 _MODULAR_TRANSFORMS = ('T', 'S', 'ST')
+_MODULAR_TRANSFORM_TO_ID = {
+    name: idx for idx, name in enumerate(_MODULAR_TRANSFORMS)
+}
 
 
 def generate_t1_signals(
@@ -274,6 +277,19 @@ def make_cyclic_modular_partners(
 
     transform_names = np.array([_MODULAR_TRANSFORMS[i] for i in transform_ids])
     return transformed.reshape(np.asarray(tau).shape), transform_names
+
+
+def modular_transform_ids(
+    transform_names: np.ndarray | list[str],
+) -> np.ndarray:
+    """Map transform names in {'T','S','ST'} to integer ids."""
+    transform_arr = np.asarray(transform_names)
+    if transform_arr.size == 0:
+        return np.zeros(0, dtype=np.int32)
+
+    flat = transform_arr.reshape(-1)
+    ids = np.array([_MODULAR_TRANSFORM_TO_ID[str(name)] for name in flat], dtype=np.int32)
+    return ids.reshape(transform_arr.shape)
 
 
 def generate_lattice_theta(

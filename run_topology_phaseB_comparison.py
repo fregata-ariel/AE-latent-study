@@ -270,7 +270,13 @@ def write_phaseb_report(
         '|---|---|---|---|---|---|---|---|---|---|---|',
     ])
 
-    for run_name in RUN_ORDER:
+    phaseb_run_order = list(RUN_ORDER)
+    phaseb_run_order.extend(
+        name for name in topology_runs
+        if name not in phaseb_run_order
+    )
+
+    for run_name in phaseb_run_order:
         if run_name.startswith('t2_'):
             continue
         summary = topology_runs.get(run_name)
@@ -398,6 +404,11 @@ def run_all(
     decision = choose_next_branch(topology_runs, phasea_branch)
 
     ordered_runs = [name for name in RUN_ORDER if name in topology_runs]
+    ordered_runs.extend(
+        spec['name']
+        for spec in experiments
+        if spec['name'] in topology_runs and spec['name'] not in ordered_runs
+    )
 
     fig = plot_phaseb_h1_trajectory(
         topology_runs,

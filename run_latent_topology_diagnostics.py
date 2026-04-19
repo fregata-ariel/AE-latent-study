@@ -208,9 +208,14 @@ def _run_topology_for_experiment(
     run_name = spec['name']
     kind = spec['kind']
     workdir, config, state, history, train_ds = _materialize_experiment(spec, base_dir)
-    is_vae = config.model.latent_type == 'vae'
+    latent_type = config.model.latent_type
+    is_vae = latent_type in ('vae', 'factorized_vae')
+    latent_view = 'quotient' if latent_type == 'factorized_vae' else 'primary'
 
-    z_all = np.asarray(encode_dataset(state, train_ds, is_vae=is_vae))
+    z_all = np.asarray(encode_dataset(
+        state, train_ds, is_vae=is_vae, latent_type=latent_type,
+        latent_view=latent_view,
+    ))
     reference_coords, reference_label = make_reference_coords(train_ds, config)
 
     max_samples = int(getattr(config.eval, 'ph_max_samples', 2000))
@@ -224,7 +229,13 @@ def _run_topology_for_experiment(
         if train_ds.j_invariant is not None:
             j_subset = np.asarray(train_ds.j_invariant)[subset_idx]
         partner_subset = encode_lattice_partner_latent(
-            state, train_ds, config, subset_idx, is_vae=is_vae,
+            state,
+            train_ds,
+            config,
+            subset_idx,
+            is_vae=is_vae,
+            latent_type=latent_type,
+            latent_view=latent_view,
         )
 
     diagnostics_summary, diagnostics_artifacts = diagnose_projection_ladder(

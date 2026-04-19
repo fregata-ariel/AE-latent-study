@@ -33,7 +33,7 @@ def create_train_state(
     # Initialize with dummy input
     dummy_input = jnp.ones((1, config.data.signal_length))
 
-    if config.model.latent_type == 'vae':
+    if config.model.latent_type in ('vae', 'factorized_vae'):
         variables = model.init(init_key, dummy_input, rng_key)
     else:
         variables = model.init(init_key, dummy_input)
@@ -55,7 +55,7 @@ def create_train_state(
     else:
         tx = optax.adam(lr_or_schedule)
 
-    if config.model.latent_type == 'vae':
+    if config.model.latent_type in ('vae', 'factorized_vae'):
         return VAETrainState.create(
             apply_fn=model.apply,
             params=params,

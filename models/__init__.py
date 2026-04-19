@@ -4,6 +4,7 @@ import ml_collections
 from flax import linen as nn
 
 from models.ae import AutoEncoder
+from models.factorized_vae import FactorizedVAE
 from models.torus_ae import TorusAutoEncoder
 from models.modular_ae import ModularAutoEncoder
 from models.vae import VAE
@@ -55,8 +56,18 @@ def create_model(config: ml_collections.ConfigDict) -> nn.Module:
             output_dim=signal_length,
             activation=activation,
         )
+    elif latent_type == 'factorized_vae':
+        return FactorizedVAE(
+            encoder_hidden=encoder_hidden,
+            decoder_hidden=decoder_hidden,
+            quotient_dim=config.model.quotient_dim,
+            gauge_dim=config.model.gauge_dim,
+            output_dim=signal_length,
+            activation=activation,
+            gauge_action_type=config.model.gauge_action_type,
+        )
     else:
         raise ValueError(
             f"Unknown latent_type '{latent_type}'. "
-            "Choose from 'standard', 'torus', 'halfplane', 'vae'."
+            "Choose from 'standard', 'torus', 'halfplane', 'vae', 'factorized_vae'."
         )

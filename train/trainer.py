@@ -11,7 +11,10 @@ from flax.training.train_state import TrainState
 
 from data.dataset import create_splits, batched_iterator, Dataset
 from data.generation import (
-    generate_lattice_theta, make_cyclic_modular_partners, normalize_lattice_signals,
+    generate_lattice_theta,
+    make_cyclic_modular_partners,
+    modular_transform_ids,
+    normalize_lattice_signals,
 )
 from models import create_model
 from train.train_state import create_train_state
@@ -19,6 +22,7 @@ from train.train_step import (
     train_step_ae, eval_step_ae, eval_step_vae, _make_train_step_vae,
     _make_train_step_lattice_invariant, _make_eval_step_lattice_invariant,
     _make_train_step_lattice_invariant_vae, _make_eval_step_lattice_invariant_vae,
+    _make_train_step_factorized_lattice_vae, _make_eval_step_factorized_lattice_vae,
 )
 from train.checkpointing import create_checkpoint_manager, save_checkpoint
 
@@ -41,13 +45,26 @@ def _evaluate(
     dataset: Dataset,
     batch_size: int,
     key: jax.Array,
-    is_vae: bool,
+    latent_type: str,
     config: ml_collections.ConfigDict | None = None,
 ) -> dict[str, float]:
     """Run evaluation on a full dataset."""
     metrics_list = []
     use_invariance = _should_use_lattice_invariance(config)
-    if use_invariance and is_vae:
+    is_vae = latent_type == 'vae'
+    is_factorized = latent_type == 'factorized_vae'
+
+    if is_factorized:
+        model = create_model(config)
+        eval_fn = _make_eval_step_factorized_lattice_vae(
+            model,
+            config.model.vae_beta,
+            config.train.modular_invariance_weight,
+            config.train.gauge_equivariance_weight,
+            config.train.decoder_equivariance_weight,
+            config.train.gauge_action_reg_weight,
+        )
+    elif use_invariance and is_vae:
         eval_fn = _make_eval_step_lattice_invariant_vae(
             config.model.vae_beta,
             config.train.modular_invariance_weight,
@@ -61,8 +78,13 @@ def _evaluate(
 
     for batch_signals, batch_thetas in _iter_eval_batches(dataset, batch_size, key):
         if use_invariance:
-            paired_batch = _make_lattice_partner_signals(batch_thetas, config)
-            metrics, _ = eval_fn(state, batch_signals, paired_batch)
+            paired_batch, transform_ids = _make_lattice_partner_batch(batch_thetas, config)
+            if is_factorized:
+                metrics, _ = eval_fn(
+                    state, batch_signals, paired_batch, transform_ids,
+                )
+            else:
+                metrics, _ = eval_fn(state, batch_signals, paired_batch)
         else:
             metrics, _ = eval_fn(state, batch_signals)
         metrics_list.append(metrics)
@@ -72,14 +94,18 @@ def _evaluate(
 def _should_use_lattice_invariance(
     config: ml_collections.ConfigDict | None,
 ) -> bool:
-    """Whether the current experiment should optimize modular invariance."""
+    """Whether the current experiment should use lattice partner batches."""
     if config is None:
         return False
 
+    latent_type = config.model.latent_type
+    weight = getattr(config.train, 'modular_invariance_weight', 0.0)
     return (
         getattr(config.data, 'data_type', 'torus') == 'lattice'
-        and getattr(config.train, 'modular_invariance_weight', 0.0) > 0.0
-        and config.model.latent_type in ('standard', 'vae')
+        and (
+            (latent_type in ('standard', 'vae') and weight > 0.0)
+            or latent_type == 'factorized_vae'
+        )
     )
 
 
@@ -99,13 +125,13 @@ def _iter_eval_batches(
         yield dataset.signals[n_covered:], dataset.thetas[n_covered:]
 
 
-def _make_lattice_partner_signals(
+def _make_lattice_partner_batch(
     batch_thetas: jnp.ndarray,
     config: ml_collections.ConfigDict,
-) -> jnp.ndarray:
-    """Generate cyclic modular partners for a batch of lattice parameters."""
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Generate cyclic modular partners and transform ids for a batch."""
     tau = np.array(batch_thetas[:, 0]) + 1j * np.array(batch_thetas[:, 1])
-    tau_partner, _ = make_cyclic_modular_partners(tau)
+    tau_partner, transform_names = make_cyclic_modular_partners(tau)
 
     signals = generate_lattice_theta(
         tau_partner,
@@ -114,10 +140,11 @@ def _make_lattice_partner_signals(
         t_max=getattr(config.data, 'lattice_t_max', 5.0),
         K=getattr(config.data, 'lattice_K', 10),
     )
-    return normalize_lattice_signals(
+    normalized = normalize_lattice_signals(
         signals,
         method=getattr(config.data, 'lattice_signal_normalization', 'none'),
     )
+    return normalized, jnp.asarray(modular_transform_ids(transform_names))
 
 
 def train_and_evaluate(
@@ -159,8 +186,15 @@ def train_and_evaluate(
     ckpt_mngr = create_checkpoint_manager(config, workdir)
 
     # Training setup
-    is_vae = config.model.latent_type == 'vae'
+    latent_type = config.model.latent_type
+    is_vae = latent_type in ('vae', 'factorized_vae')
+    is_factorized = latent_type == 'factorized_vae'
     use_invariance = _should_use_lattice_invariance(config)
+    if (
+        latent_type == 'factorized_vae'
+        and getattr(config.data, 'data_type', 'torus') != 'lattice'
+    ):
+        raise ValueError('factorized_vae is currently only supported for lattice data.')
     if (
         getattr(config.train, 'modular_invariance_weight', 0.0) > 0.0
         and getattr(config.data, 'data_type', 'torus') != 'lattice'
@@ -168,13 +202,22 @@ def train_and_evaluate(
         raise ValueError('modular_invariance_weight is only supported for lattice data.')
     if (
         getattr(config.train, 'modular_invariance_weight', 0.0) > 0.0
-        and config.model.latent_type not in ('standard', 'vae')
+        and config.model.latent_type not in ('standard', 'vae', 'factorized_vae')
     ):
         raise ValueError(
-            'modular_invariance_weight is only supported for standard lattice AEs and lattice VAEs.'
+            'modular_invariance_weight is only supported for standard lattice AEs, lattice VAEs, and factorized lattice VAEs.'
         )
 
-    if is_vae and use_invariance:
+    if is_factorized:
+        train_step_fn = _make_train_step_factorized_lattice_vae(
+            model,
+            config.model.vae_beta,
+            config.train.modular_invariance_weight,
+            config.train.gauge_equivariance_weight,
+            config.train.decoder_equivariance_weight,
+            config.train.gauge_action_reg_weight,
+        )
+    elif is_vae and use_invariance:
         train_step_fn = _make_train_step_lattice_invariant_vae(
             config.model.vae_beta,
             config.train.modular_invariance_weight,
@@ -195,8 +238,13 @@ def train_and_evaluate(
     }
     if is_vae:
         history['train_kl'] = []
-    if use_invariance:
+    if use_invariance and not is_factorized:
         history['train_inv_loss'] = []
+    if is_factorized:
+        history['train_quotient_invariance'] = []
+        history['train_gauge_equivariance'] = []
+        history['train_decoder_equivariance'] = []
+        history['train_action_regularizer'] = []
 
     best_val_loss = float('inf')
     best_epoch = -1
@@ -213,8 +261,15 @@ def train_and_evaluate(
             train_ds, batch_size, epoch_key, shuffle=True,
         ):
             if use_invariance:
-                paired_batch = _make_lattice_partner_signals(batch_thetas, config)
-                state, metrics = train_step_fn(state, batch_signals, paired_batch)
+                paired_batch, transform_ids = _make_lattice_partner_batch(
+                    batch_thetas, config,
+                )
+                if is_factorized:
+                    state, metrics = train_step_fn(
+                        state, batch_signals, paired_batch, transform_ids,
+                    )
+                else:
+                    state, metrics = train_step_fn(state, batch_signals, paired_batch)
             else:
                 state, metrics = train_step_fn(state, batch_signals)
             train_metrics_list.append(metrics)
@@ -224,7 +279,7 @@ def train_and_evaluate(
         # Validate
         key, val_key = jax.random.split(key)
         val_metrics = _evaluate(
-            state, val_ds, batch_size, val_key, is_vae, config=config,
+            state, val_ds, batch_size, val_key, latent_type, config=config,
         )
 
         # Record history
@@ -234,8 +289,21 @@ def train_and_evaluate(
         history['val_mse'].append(val_metrics.get('mse', 0.0))
         if is_vae and 'kl' in train_metrics:
             history['train_kl'].append(train_metrics['kl'])
-        if use_invariance and 'inv_loss' in train_metrics:
+        if use_invariance and not is_factorized and 'inv_loss' in train_metrics:
             history['train_inv_loss'].append(train_metrics['inv_loss'])
+        if is_factorized:
+            history['train_quotient_invariance'].append(
+                train_metrics.get('quotient_invariance', 0.0),
+            )
+            history['train_gauge_equivariance'].append(
+                train_metrics.get('gauge_equivariance', 0.0),
+            )
+            history['train_decoder_equivariance'].append(
+                train_metrics.get('decoder_equivariance', 0.0),
+            )
+            history['train_action_regularizer'].append(
+                train_metrics.get('action_regularizer', 0.0),
+            )
 
         # Logging
         if (epoch + 1) % config.train.log_every == 0 or epoch == 0:

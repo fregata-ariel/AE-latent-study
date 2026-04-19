@@ -25,8 +25,11 @@ def get_config() -> ml_collections.ConfigDict:
 
     # --- Model ---
     config.model = ml_collections.ConfigDict()
-    config.model.latent_type = 'standard'  # 'standard' | 'torus' | 'vae'
+    config.model.latent_type = 'standard'  # 'standard' | 'torus' | 'vae' | 'factorized_vae'
     config.model.latent_dim = 2            # R^d dim for standard; n_angles for torus
+    config.model.quotient_dim = 2          # quotient-chart dimension for factorized_vae
+    config.model.gauge_dim = 4             # gauge dimension for factorized_vae
+    config.model.gauge_action_type = 'affine'
     config.model.encoder_hidden = (256, 128, 64)
     config.model.decoder_hidden = (64, 128, 256)
     config.model.activation = 'relu'       # 'relu' | 'tanh' | 'gelu'
@@ -41,6 +44,10 @@ def get_config() -> ml_collections.ConfigDict:
     config.train.lr_schedule = 'constant'  # 'constant' | 'cosine'
     config.train.patience = 20             # early stopping patience
     config.train.log_every = 10            # log metrics every N epochs
+    config.train.modular_invariance_weight = 0.0
+    config.train.gauge_equivariance_weight = 0.03
+    config.train.decoder_equivariance_weight = 0.03
+    config.train.gauge_action_reg_weight = 1e-4
 
     # --- Checkpoint ---
     config.checkpoint = ml_collections.ConfigDict()

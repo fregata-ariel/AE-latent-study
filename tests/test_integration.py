@@ -13,6 +13,7 @@ from configs.default import get_config
 from configs.lattice_default import get_config as get_lattice_config
 from run_lattice_step2_experiments import run_all as run_step2_all
 from run_lattice_step3_experiments import run_all as run_step3_all
+from run_lattice_step4_experiments import run_all as run_step4_all
 from run_latent_topology_diagnostics import run_all as run_topology_all
 from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 from eval.analysis import run_full_evaluation
@@ -66,6 +67,15 @@ def _tiny_lattice_config(
     config.model.decoder_hidden = (8, 16)
     if latent_type == 'vae':
         config.model.vae_beta = 0.01
+    if latent_type == 'factorized_vae':
+        config.model.latent_dim = 6
+        config.model.quotient_dim = 2
+        config.model.gauge_dim = 4
+        config.model.gauge_action_type = 'affine'
+        config.model.vae_beta = 0.01
+        config.train.gauge_equivariance_weight = 0.03
+        config.train.decoder_equivariance_weight = 0.03
+        config.train.gauge_action_reg_weight = 1e-4
     config.train.batch_size = 16
     config.train.num_epochs = 3
     config.train.patience = 10
@@ -190,6 +200,28 @@ def test_lattice_vae_pipeline_with_invariance():
         assert 'modular_invariance' in summary
 
 
+def test_factorized_lattice_pipeline():
+    config = _tiny_lattice_config(
+        latent_type='factorized_vae',
+        latent_dim=6,
+        modular_invariance_weight=0.1,
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state, history, (train_ds, _, test_ds) = train_and_evaluate(config, tmpdir)
+        summary = run_full_evaluation(state, config, train_ds, test_ds, history, tmpdir)
+
+        assert 'train_kl' in history
+        assert 'train_quotient_invariance' in history
+        assert 'train_gauge_equivariance' in history
+        assert 'train_decoder_equivariance' in history
+        assert 'train_action_regularizer' in history
+        assert 'factorized_consistency' in summary
+        assert 'chart_quality' in summary
+        assert 'j_correlation' in summary
+        assert 'modular_invariance' in summary
+        assert 'quotient_partner_rank_percentile_mean' in summary['factorized_consistency']
+
+
 def test_step2_runner_with_tiny_config():
     with tempfile.TemporaryDirectory() as tmpdir:
         report_path = os.path.join(tmpdir, 'walkthrough-lattice-step2.md')
@@ -300,6 +332,86 @@ def test_step3_runner_with_tiny_config():
             report_text = f.read()
         assert 'lattice_standard_norm_inv' in report_text
         assert 'Success gate' in report_text
+        assert 'Selected run' in report_text
+
+
+def test_step4_runner_with_tiny_config():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-lattice-step4.md')
+        anchor_path = os.path.join(tmpdir, 'step3_anchors.json')
+
+        anchor_summaries = {
+            'lattice_standard_norm_inv': {
+                'reconstruction': {'mse': 1e-7},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.98},
+                'modular_invariance': {'mean_latent_distance': 0.001},
+                'chart_quality': {
+                    'trustworthiness': 0.86,
+                    'knn_jaccard_mean': 0.05,
+                    'effective_dimension': 1.0,
+                },
+            },
+            'lattice_vae_norm_inv_b010_l100': {
+                'reconstruction': {'mse': 8e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.96},
+                'modular_invariance': {'mean_latent_distance': 0.0001},
+                'chart_quality': {
+                    'trustworthiness': 0.85,
+                    'knn_jaccard_mean': 0.06,
+                    'effective_dimension': 2.0,
+                },
+            },
+            'lattice_vae_norm_inv_b030_l100': {
+                'reconstruction': {'mse': 8e-5},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.81},
+                'modular_invariance': {'mean_latent_distance': 0.0001},
+                'chart_quality': {
+                    'trustworthiness': 0.86,
+                    'knn_jaccard_mean': 0.067,
+                    'effective_dimension': 1.85,
+                },
+            },
+            'lattice_vae_wide_norm_inv_b003_l030': {
+                'reconstruction': {'mse': 8.7e-4},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.85},
+                'modular_invariance': {'mean_latent_distance': 0.0004},
+                'chart_quality': {
+                    'trustworthiness': 0.88,
+                    'knn_jaccard_mean': 0.053,
+                    'effective_dimension': 1.96,
+                },
+            },
+        }
+        with open(anchor_path, 'w') as f:
+            json.dump(anchor_summaries, f, indent=2)
+
+        def tiny_step4_factory():
+            return _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+
+        summaries = run_step4_all(
+            base_dir=tmpdir,
+            experiments=[('lattice_factorized_vae_fd_b010_q100_g030_d030', tiny_step4_factory)],
+            summary_filename='tiny_step4_summaries.json',
+            report_path=report_path,
+            anchor_summary_path=anchor_path,
+        )
+
+        assert 'lattice_factorized_vae_fd_b010_q100_g030_d030' in summaries
+        summary = summaries['lattice_factorized_vae_fd_b010_q100_g030_d030']
+        assert 'factorized_consistency' in summary
+        assert 'chart_quality' in summary
+        assert 'j_correlation' in summary
+
+        summary_path = os.path.join(tmpdir, 'tiny_step4_summaries.json')
+        assert os.path.exists(summary_path)
+        assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'Step 3 Anchors' in report_text
         assert 'Selected run' in report_text
 
 
@@ -518,3 +630,57 @@ def test_topology_phaseb_runner_with_saved_phasea_outputs():
             roadmap_text = f.read()
         assert 'Current recommendation' in roadmap_text
         assert 'Active Branches' in roadmap_text
+
+
+def test_topology_runner_factorized_uses_quotient_view():
+    def fake_persistence_diagrams(points, maxdim):
+        spread = max(float(np.std(points)), 1e-3)
+        h0 = np.array([[0.0, spread]], dtype=float)
+        h1 = (
+            np.array([[0.1 * spread, 0.7 * spread]], dtype=float)
+            if maxdim >= 1 and points.shape[1] >= 2 else
+            np.zeros((0, 2), dtype=float)
+        )
+        return [h0, h1]
+
+    def fake_diagram_distances(previous, current):
+        if previous is None:
+            return None
+        return {
+            'h0_bottleneck': 0.05,
+            'h1_bottleneck': 0.07,
+            'h0_wasserstein': 0.06,
+            'h1_wasserstein': 0.08,
+            'max_bottleneck': 0.07,
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-topology-phaseA.md')
+
+        def tiny_factorized_factory():
+            return _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+
+        experiments = [
+            {
+                'name': 'lattice_factorized_vae_fd_b010_q100_g030_d030',
+                'kind': 'lattice',
+                'config_source': tiny_factorized_factory,
+            },
+        ]
+
+        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+            with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
+                with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
+                    combined = run_topology_all(
+                        base_dir=tmpdir,
+                        diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics'),
+                        report_path=report_path,
+                        experiments=experiments,
+                    )
+
+        summary = combined['topology_diagnostics']['lattice_factorized_vae_fd_b010_q100_g030_d030']
+        assert summary['topology_diagnostics']['full_latent_dim'] == 2

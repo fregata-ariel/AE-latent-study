@@ -15,7 +15,10 @@ from sklearn.decomposition import PCA
 from data.dataset import Dataset
 from data.generation import generate_t1_signals, generate_t2_signals
 from eval.metrics import (
-    encode_dataset, compute_j_correlation,
+    _deterministic_forward,
+    _resolve_latent_type,
+    compute_j_correlation,
+    encode_dataset,
 )
 
 
@@ -62,6 +65,7 @@ def plot_reconstructions(
     dataset: Dataset,
     n_examples: int = 8,
     is_vae: bool = False,
+    latent_type: str | None = None,
     save_path: str | None = None,
 ) -> plt.Figure:
     """Plot input signals alongside their reconstructions.
@@ -78,13 +82,10 @@ def plot_reconstructions(
     """
     key = jax.random.PRNGKey(0)
     signals = dataset.signals[:n_examples]
-
-    if is_vae:
-        x_hat, _, _, _ = state.apply_fn(
-            {'params': state.params}, signals, key, deterministic=True,
-        )
-    else:
-        x_hat, _ = state.apply_fn({'params': state.params}, signals)
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
+    x_hat, _ = _deterministic_forward(
+        state, signals, key, latent_type=latent_type,
+    )
 
     signals_np = np.array(signals)
     x_hat_np = np.array(x_hat)
@@ -121,6 +122,7 @@ def plot_latent_scatter(
     dataset: Dataset,
     config,
     is_vae: bool = False,
+    latent_type: str | None = None,
     save_path: str | None = None,
 ) -> plt.Figure:
     """Scatter plot of latent codes colored by true theta.
@@ -135,10 +137,10 @@ def plot_latent_scatter(
     Returns:
         matplotlib Figure.
     """
-    z = np.array(encode_dataset(state, dataset, is_vae=is_vae))
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
+    z = np.array(encode_dataset(state, dataset, latent_type=latent_type))
     thetas_np = np.array(dataset.thetas)
     torus_dim = config.data.torus_dim
-    latent_type = config.model.latent_type
     latent_dim = z.shape[-1]
 
     if torus_dim == 1:
@@ -320,6 +322,7 @@ def plot_periodicity_check(
     config,
     n_points: int = 200,
     is_vae: bool = False,
+    latent_type: str | None = None,
     save_path: str | None = None,
 ) -> plt.Figure:
     """Visualize latent continuity around the periodic boundary.
@@ -344,12 +347,10 @@ def plot_periodicity_check(
         thetas, config.data.omega, config.data.signal_length, config.data.dt,
     )
 
-    if is_vae:
-        _, z, _, _ = state.apply_fn(
-            {'params': state.params}, signals, key, deterministic=True,
-        )
-    else:
-        _, z = state.apply_fn({'params': state.params}, signals)
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
+    _, z = _deterministic_forward(
+        state, signals, key, latent_type=latent_type,
+    )
 
     z_np = np.array(z)
     thetas_np = np.array(thetas)
@@ -416,6 +417,7 @@ def plot_lattice_latent_scatter(
     dataset: Dataset,
     config,
     is_vae: bool = False,
+    latent_type: str | None = None,
     save_path: str | None = None,
 ) -> plt.Figure:
     """Scatter plot of latent codes for lattice experiments.
@@ -434,9 +436,12 @@ def plot_lattice_latent_scatter(
     Returns:
         matplotlib Figure.
     """
-    z = np.array(encode_dataset(state, dataset, is_vae=is_vae))
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
+    latent_view = 'quotient' if latent_type == 'factorized_vae' else 'primary'
+    z = np.array(encode_dataset(
+        state, dataset, latent_type=latent_type, latent_view=latent_view,
+    ))
     thetas_np = np.array(dataset.thetas)  # (N, 2): [Re(τ), Im(τ)]
-    latent_type = config.model.latent_type
 
     tau_real = thetas_np[:, 0]
     tau_imag = thetas_np[:, 1]

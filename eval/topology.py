@@ -414,6 +414,8 @@ def encode_lattice_partner_latent(
     config,
     subset_indices: np.ndarray,
     is_vae: bool = False,
+    latent_type: str | None = None,
+    latent_view: str = 'primary',
 ) -> np.ndarray:
     """Encode modularly transformed lattice partners for a fixed subset."""
     tau_values = dataset.tau
@@ -441,7 +443,13 @@ def encode_lattice_partner_latent(
         thetas=jnp.asarray(partner_thetas),
         tau=tau_partner,
     )
-    return np.asarray(encode_dataset(state, partner_dataset, is_vae=is_vae))
+    return np.asarray(encode_dataset(
+        state,
+        partner_dataset,
+        is_vae=is_vae,
+        latent_type=latent_type,
+        latent_view=latent_view,
+    ))
 
 
 def diagnose_projection_ladder(

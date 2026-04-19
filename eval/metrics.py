@@ -10,6 +10,53 @@ from sklearn.manifold import trustworthiness
 from sklearn.neighbors import NearestNeighbors
 
 from data.dataset import Dataset, batched_iterator
+from data.generation import modular_transform_ids
+from models import create_model
+
+
+def _resolve_latent_type(
+    latent_type: str | None = None,
+    is_vae: bool = False,
+) -> str:
+    """Resolve legacy `is_vae` flag and explicit latent-type string."""
+    if latent_type is not None:
+        return latent_type
+    return 'vae' if is_vae else 'standard'
+
+
+def _deterministic_forward(
+    state: TrainState,
+    batch: jnp.ndarray,
+    key: jax.Array,
+    latent_type: str,
+    latent_view: str = 'primary',
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Run one deterministic forward pass and pick a latent view."""
+    if latent_type == 'factorized_vae':
+        x_hat, z, q_mean, _, g_mean, _ = state.apply_fn(
+            {'params': state.params}, batch, key, deterministic=True,
+        )
+        if latent_view in ('primary', 'quotient'):
+            latent = q_mean
+        elif latent_view == 'gauge':
+            latent = g_mean
+        elif latent_view == 'full':
+            latent = jnp.concatenate([q_mean, g_mean], axis=-1)
+        else:
+            raise ValueError(
+                f"Unknown latent_view '{latent_view}'. "
+                "Choose from 'primary', 'quotient', 'gauge', 'full'."
+            )
+        return x_hat, latent
+
+    if latent_type == 'vae':
+        x_hat, z, _, _ = state.apply_fn(
+            {'params': state.params}, batch, key, deterministic=True,
+        )
+        return x_hat, z
+
+    x_hat, z = state.apply_fn({'params': state.params}, batch)
+    return x_hat, z
 
 
 def _iterate_all_samples(
@@ -34,6 +81,7 @@ def compute_reconstruction_error(
     dataset: Dataset,
     batch_size: int = 512,
     is_vae: bool = False,
+    latent_type: str | None = None,
 ) -> dict[str, float]:
     """Compute reconstruction MSE and MAE on a full dataset.
 
@@ -47,18 +95,16 @@ def compute_reconstruction_error(
         Dictionary with 'mse' and 'mae'.
     """
     key = jax.random.PRNGKey(0)  # deterministic for eval
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
     sum_sq_err = 0.0
     sum_abs_err = 0.0
     n_elems = 0
     n_samples = 0
 
     for batch_signals in _iterate_all_samples(dataset, batch_size, key):
-        if is_vae:
-            x_hat, _, _, _ = state.apply_fn(
-                {'params': state.params}, batch_signals, key, deterministic=True,
-            )
-        else:
-            x_hat, _ = state.apply_fn({'params': state.params}, batch_signals)
+        x_hat, _ = _deterministic_forward(
+            state, batch_signals, key, latent_type=latent_type,
+        )
 
         diff = batch_signals - x_hat
         sum_sq_err += float(jnp.sum(diff ** 2))
@@ -81,6 +127,8 @@ def encode_dataset(
     dataset: Dataset,
     batch_size: int = 512,
     is_vae: bool = False,
+    latent_type: str | None = None,
+    latent_view: str = 'primary',
 ) -> jnp.ndarray:
     """Encode an entire dataset to latent representations.
 
@@ -94,18 +142,42 @@ def encode_dataset(
         Latent codes, shape (N, latent_dim).
     """
     key = jax.random.PRNGKey(0)
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
     all_z = []
 
     for batch_signals in _iterate_all_samples(dataset, batch_size, key):
-        if is_vae:
-            _, z, _, _ = state.apply_fn(
-                {'params': state.params}, batch_signals, key, deterministic=True,
-            )
-        else:
-            _, z = state.apply_fn({'params': state.params}, batch_signals)
+        _, z = _deterministic_forward(
+            state,
+            batch_signals,
+            key,
+            latent_type=latent_type,
+            latent_view=latent_view,
+        )
         all_z.append(z)
 
     return jnp.concatenate(all_z, axis=0)
+
+
+def encode_factorized_views(
+    state: TrainState,
+    dataset: Dataset,
+    batch_size: int = 512,
+) -> dict[str, jnp.ndarray]:
+    """Encode a factorized VAE dataset into full / quotient / gauge views."""
+    return {
+        'full': encode_dataset(
+            state, dataset, batch_size=batch_size,
+            latent_type='factorized_vae', latent_view='full',
+        ),
+        'quotient': encode_dataset(
+            state, dataset, batch_size=batch_size,
+            latent_type='factorized_vae', latent_view='quotient',
+        ),
+        'gauge': encode_dataset(
+            state, dataset, batch_size=batch_size,
+            latent_type='factorized_vae', latent_view='gauge',
+        ),
+    }
 
 
 def check_periodicity(
@@ -113,6 +185,7 @@ def check_periodicity(
     config,
     n_points: int = 100,
     is_vae: bool = False,
+    latent_type: str | None = None,
 ) -> dict[str, float]:
     """Check if theta=0 and theta~=2*pi map to similar latent representations.
 
@@ -144,24 +217,13 @@ def check_periodicity(
         theta_end, config.data.omega, config.data.signal_length, config.data.dt,
     )
 
-    if is_vae:
-        _, z_start, _, _ = state.apply_fn(
-            {'params': state.params}, sig_start, key, deterministic=True,
-        )
-        _, z_end, _, _ = state.apply_fn(
-            {'params': state.params}, sig_end, key, deterministic=True,
-        )
-        recon_start, _, _, _ = state.apply_fn(
-            {'params': state.params}, sig_start, key, deterministic=True,
-        )
-        recon_end, _, _, _ = state.apply_fn(
-            {'params': state.params}, sig_end, key, deterministic=True,
-        )
-    else:
-        _, z_start = state.apply_fn({'params': state.params}, sig_start)
-        _, z_end = state.apply_fn({'params': state.params}, sig_end)
-        recon_start, _ = state.apply_fn({'params': state.params}, sig_start)
-        recon_end, _ = state.apply_fn({'params': state.params}, sig_end)
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
+    recon_start, z_start = _deterministic_forward(
+        state, sig_start, key, latent_type=latent_type,
+    )
+    recon_end, z_end = _deterministic_forward(
+        state, sig_end, key, latent_type=latent_type,
+    )
 
     latent_dist = float(jnp.sqrt(jnp.sum((z_start - z_end) ** 2)))
     recon_dist = float(jnp.sqrt(jnp.mean((recon_start - recon_end) ** 2)))
@@ -181,6 +243,8 @@ def check_modular_invariance(
     config,
     n_pairs: int = 100,
     is_vae: bool = False,
+    latent_type: str | None = None,
+    latent_view: str = 'primary',
 ) -> dict[str, float]:
     """Check if SL₂(Z)-equivalent τ values map to similar latent representations.
 
@@ -224,17 +288,13 @@ def check_modular_invariance(
     sig_orig = normalize_lattice_signals(sig_orig, method=normalization)
     sig_trans = normalize_lattice_signals(sig_trans, method=normalization)
 
-    # Encode both
-    if is_vae:
-        _, z_orig, _, _ = state.apply_fn(
-            {'params': state.params}, sig_orig, key, deterministic=True,
-        )
-        _, z_trans, _, _ = state.apply_fn(
-            {'params': state.params}, sig_trans, key, deterministic=True,
-        )
-    else:
-        _, z_orig = state.apply_fn({'params': state.params}, sig_orig)
-        _, z_trans = state.apply_fn({'params': state.params}, sig_trans)
+    latent_type = _resolve_latent_type(latent_type, is_vae=is_vae)
+    _, z_orig = _deterministic_forward(
+        state, sig_orig, key, latent_type=latent_type, latent_view=latent_view,
+    )
+    _, z_trans = _deterministic_forward(
+        state, sig_trans, key, latent_type=latent_type, latent_view=latent_view,
+    )
 
     # Compute pairwise latent distances
     dists = jnp.sqrt(jnp.sum((z_orig - z_trans) ** 2, axis=-1))
@@ -315,6 +375,37 @@ def _neighbor_indices(points: np.ndarray, n_neighbors: int) -> np.ndarray:
     nbrs = NearestNeighbors(n_neighbors=n_neighbors + 1)
     nbrs.fit(points)
     return nbrs.kneighbors(return_distance=False)[:, 1:]
+
+
+def _compute_partner_preservation_metrics(
+    latent_coords: np.ndarray,
+    partner_latent: np.ndarray,
+    n_neighbors: int,
+) -> dict[str, float]:
+    """Measure how well a latent point cloud keeps modular partners nearby."""
+    z = np.asarray(latent_coords, dtype=float)
+    partner = np.asarray(partner_latent, dtype=float)
+    n_samples = z.shape[0]
+    if n_samples <= 1:
+        return {
+            'partner_rank_percentile_mean': 1.0,
+            'partner_rank_percentile_std': 0.0,
+            'partner_knn_hit_rate': 0.0,
+        }
+
+    dists = np.linalg.norm(z[:, None, :] - z[None, :, :], axis=-1)
+    np.fill_diagonal(dists, np.inf)
+    partner_dists = np.linalg.norm(z - partner, axis=-1)
+    closer_counts = np.sum(dists < partner_dists[:, None], axis=1)
+    partner_rank_percentiles = closer_counts / max(n_samples - 1, 1)
+
+    k_neighbors = max(1, min(int(n_neighbors), n_samples - 1))
+    partner_hits = closer_counts < k_neighbors
+    return {
+        'partner_rank_percentile_mean': float(np.mean(partner_rank_percentiles)),
+        'partner_rank_percentile_std': float(np.std(partner_rank_percentiles)),
+        'partner_knn_hit_rate': float(np.mean(partner_hits)),
+    }
 
 
 def _local_knn_jaccard(
@@ -506,3 +597,91 @@ def compute_j_correlation(
     results['max_logabsj_mutual_info'] = max(logabs_mis) if logabs_mis else 0.0
 
     return results
+
+
+def compute_factorized_consistency(
+    state: TrainState,
+    dataset: Dataset,
+    config,
+    batch_size: int = 512,
+) -> dict[str, float]:
+    """Compute quotient/gauge consistency metrics for factorized lattice VAEs."""
+    from data.generation import (
+        generate_lattice_theta,
+        make_cyclic_modular_partners,
+        normalize_lattice_signals,
+    )
+
+    if config.model.latent_type != 'factorized_vae':
+        raise ValueError('compute_factorized_consistency requires latent_type="factorized_vae".')
+
+    tau_values = dataset.tau
+    if tau_values is None:
+        tau_values = np.asarray(dataset.thetas[:, 0]) + 1j * np.asarray(dataset.thetas[:, 1])
+
+    tau_partner, transform_names = make_cyclic_modular_partners(tau_values)
+    partner_signals = generate_lattice_theta(
+        tau_partner,
+        config.data.signal_length,
+        t_min=getattr(config.data, 'lattice_t_min', 0.5),
+        t_max=getattr(config.data, 'lattice_t_max', 5.0),
+        K=getattr(config.data, 'lattice_K', 10),
+    )
+    partner_signals = normalize_lattice_signals(
+        partner_signals,
+        method=getattr(config.data, 'lattice_signal_normalization', 'none'),
+    )
+    partner_thetas = np.stack([tau_partner.real, tau_partner.imag], axis=-1)
+    partner_dataset = Dataset(
+        signals=jnp.asarray(partner_signals),
+        thetas=jnp.asarray(partner_thetas),
+        j_invariant=None,
+        tau=tau_partner,
+    )
+
+    views = encode_factorized_views(state, dataset, batch_size=batch_size)
+    partner_views = encode_factorized_views(state, partner_dataset, batch_size=batch_size)
+
+    model = create_model(config)
+    transform_ids = jnp.asarray(modular_transform_ids(transform_names), dtype=jnp.int32)
+    acted_gauge = model.apply(
+        {'params': state.params},
+        jnp.asarray(views['gauge']),
+        transform_ids,
+        method=model.apply_gauge_action,
+    )
+    partner_recon = model.apply(
+        {'params': state.params},
+        jnp.asarray(views['quotient']),
+        acted_gauge,
+        method=model.decode_parts,
+    )
+    action_reg = model.apply(
+        {'params': state.params},
+        method=model.action_regularizer,
+    )
+
+    quotient = np.asarray(views['quotient'], dtype=float)
+    quotient_partner = np.asarray(partner_views['quotient'], dtype=float)
+    gauge_partner = np.asarray(partner_views['gauge'], dtype=float)
+    partner_preservation = _compute_partner_preservation_metrics(
+        quotient,
+        quotient_partner,
+        n_neighbors=getattr(config.eval, 'chart_n_neighbors', 8),
+    )
+
+    return {
+        'quotient_pair_distance_mean': float(np.mean(np.linalg.norm(
+            quotient - quotient_partner, axis=-1,
+        ))),
+        'quotient_partner_rank_percentile_mean': partner_preservation['partner_rank_percentile_mean'],
+        'quotient_partner_rank_percentile_std': partner_preservation['partner_rank_percentile_std'],
+        'quotient_partner_knn_hit_rate': partner_preservation['partner_knn_hit_rate'],
+        'gauge_equivariance_mse': float(np.mean(np.sum(
+            (np.asarray(acted_gauge) - gauge_partner) ** 2, axis=-1,
+        ))),
+        'decoder_equivariance_mse': float(np.mean(
+            (np.asarray(partner_recon) - np.asarray(partner_signals)) ** 2,
+        )),
+        'gauge_action_reg': float(action_reg),
+    }

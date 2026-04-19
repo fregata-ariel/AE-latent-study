@@ -8,6 +8,7 @@ from configs.default import get_config
 from models import create_model
 from models.layers import MLP, TorusLatent
 from models.ae import AutoEncoder
+from models.factorized_vae import FactorizedVAE
 from models.torus_ae import TorusAutoEncoder
 from models.vae import VAE
 
@@ -140,6 +141,59 @@ def test_vae_deterministic():
     x_hat2, z2, m2, _ = model.apply(variables, x, sample_key, deterministic=True)
     np.testing.assert_array_equal(np.array(z1), np.array(m1))
     np.testing.assert_array_equal(np.array(x_hat1), np.array(x_hat2))
+
+
+def test_factorized_vae_shapes():
+    config = get_config()
+    config.model.latent_type = 'factorized_vae'
+    config.model.latent_dim = 6
+    config.model.quotient_dim = 2
+    config.model.gauge_dim = 4
+    config.model.encoder_hidden = (32, 16)
+    config.model.decoder_hidden = (16, 32)
+
+    model = create_model(config)
+    key = jax.random.PRNGKey(0)
+    init_key, sample_key = jax.random.split(key)
+    x = jnp.ones((4, config.data.signal_length))
+    variables = model.init(init_key, x, sample_key)
+    x_hat, z, q_mean, q_logvar, g_mean, g_logvar = model.apply(
+        variables, x, sample_key,
+    )
+
+    assert x_hat.shape == (4, config.data.signal_length)
+    assert z.shape == (4, 6)
+    assert q_mean.shape == (4, 2)
+    assert q_logvar.shape == (4, 2)
+    assert g_mean.shape == (4, 4)
+    assert g_logvar.shape == (4, 4)
+
+
+def test_factorized_vae_gauge_action_composes_st():
+    model = FactorizedVAE(
+        encoder_hidden=(32, 16),
+        decoder_hidden=(16, 32),
+        quotient_dim=2,
+        gauge_dim=4,
+        output_dim=100,
+    )
+    key = jax.random.PRNGKey(0)
+    init_key, sample_key = jax.random.split(key)
+    x = jnp.ones((2, 100))
+    variables = model.init(init_key, x, sample_key)
+    gauge = jnp.arange(8, dtype=jnp.float32).reshape(2, 4)
+
+    acted_t = model.apply(
+        variables, gauge, jnp.array([0, 0]), method=model.apply_gauge_action,
+    )
+    acted_st = model.apply(
+        variables, gauge, jnp.array([2, 2]), method=model.apply_gauge_action,
+    )
+    manual_st = model.apply(
+        variables, acted_t, jnp.array([1, 1]), method=model.apply_gauge_action,
+    )
+
+    np.testing.assert_allclose(np.array(acted_st), np.array(manual_st), atol=1e-6)
 
 
 def test_vae_kl_divergence():

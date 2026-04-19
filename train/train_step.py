@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
+from models.factorized_vae import FactorizedVAE
 from train.train_state import VAETrainState
 from models.vae import VAE
 
@@ -128,6 +129,87 @@ def _make_train_step_lattice_invariant_vae(beta: float, weight: float):
     return train_step_vae_lattice_invariant
 
 
+def _make_train_step_factorized_lattice_vae(
+    model,
+    beta: float,
+    quotient_weight: float,
+    gauge_weight: float,
+    decoder_weight: float,
+    action_reg_weight: float,
+):
+    """Create a JIT-compiled factorized lattice VAE training step."""
+
+    @jax.jit
+    def train_step_factorized_lattice_vae(
+        state: VAETrainState,
+        batch: jnp.ndarray,
+        paired_batch: jnp.ndarray,
+        transform_ids: jnp.ndarray,
+    ) -> tuple[VAETrainState, dict[str, jnp.ndarray]]:
+        rng, step_rng = jax.random.split(state.rng)
+
+        def loss_fn(params):
+            x_hat, _, q_mean, q_logvar, g_mean, g_logvar = state.apply_fn(
+                {'params': params}, batch, step_rng,
+            )
+            _, _, q_pair_mean, _, g_pair_mean, _ = state.apply_fn(
+                {'params': params}, paired_batch, step_rng, deterministic=True,
+            )
+            acted_gauge = state.apply_fn(
+                {'params': params},
+                g_mean,
+                transform_ids,
+                method=model.apply_gauge_action,
+            )
+            paired_recon = state.apply_fn(
+                {'params': params},
+                q_mean,
+                acted_gauge,
+                method=model.decode_parts,
+            )
+            action_reg = state.apply_fn(
+                {'params': params},
+                method=model.action_regularizer,
+            )
+
+            mse = jnp.mean((batch - x_hat) ** 2)
+            kl_q = jnp.mean(FactorizedVAE.kl_divergence(q_mean, q_logvar))
+            kl_g = jnp.mean(FactorizedVAE.kl_divergence(g_mean, g_logvar))
+            kl = kl_q + kl_g
+            quotient_invariance = jnp.mean(
+                jnp.sum((q_mean - q_pair_mean) ** 2, axis=-1),
+            )
+            gauge_equivariance = jnp.mean(
+                jnp.sum((g_pair_mean - acted_gauge) ** 2, axis=-1),
+            )
+            decoder_equivariance = jnp.mean((paired_recon - paired_batch) ** 2)
+            loss = (
+                mse
+                + beta * kl
+                + quotient_weight * quotient_invariance
+                + gauge_weight * gauge_equivariance
+                + decoder_weight * decoder_equivariance
+                + action_reg_weight * action_reg
+            )
+            return loss, {
+                'loss': loss,
+                'mse': mse,
+                'kl': kl,
+                'quotient_invariance': quotient_invariance,
+                'gauge_equivariance': gauge_equivariance,
+                'decoder_equivariance': decoder_equivariance,
+                'action_regularizer': action_reg,
+            }
+
+        grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+        (_, metrics), grads = grad_fn(state.params)
+        state = state.apply_gradients(grads=grads)
+        state = state.replace(rng=rng)
+        return state, metrics
+
+    return train_step_factorized_lattice_vae
+
+
 def _make_eval_step_lattice_invariant(weight: float):
     """Create a JIT-compiled lattice AE eval step with invariance loss."""
 
@@ -169,6 +251,78 @@ def _make_eval_step_lattice_invariant_vae(beta: float, weight: float):
         return {'mse': mse, 'loss': loss, 'kl': kl, 'inv_loss': inv_loss}, z
 
     return eval_step_lattice_invariant_vae
+
+
+def _make_eval_step_factorized_lattice_vae(
+    model,
+    beta: float,
+    quotient_weight: float,
+    gauge_weight: float,
+    decoder_weight: float,
+    action_reg_weight: float,
+):
+    """Create a JIT-compiled factorized lattice VAE eval step."""
+
+    @jax.jit
+    def eval_step_factorized_lattice_vae(
+        state: VAETrainState,
+        batch: jnp.ndarray,
+        paired_batch: jnp.ndarray,
+        transform_ids: jnp.ndarray,
+    ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
+        x_hat, z, q_mean, q_logvar, g_mean, g_logvar = state.apply_fn(
+            {'params': state.params}, batch, state.rng, deterministic=True,
+        )
+        _, _, q_pair_mean, _, g_pair_mean, _ = state.apply_fn(
+            {'params': state.params}, paired_batch, state.rng, deterministic=True,
+        )
+        acted_gauge = state.apply_fn(
+            {'params': state.params},
+            g_mean,
+            transform_ids,
+            method=model.apply_gauge_action,
+        )
+        paired_recon = state.apply_fn(
+            {'params': state.params},
+            q_mean,
+            acted_gauge,
+            method=model.decode_parts,
+        )
+        action_reg = state.apply_fn(
+            {'params': state.params},
+            method=model.action_regularizer,
+        )
+
+        mse = jnp.mean((batch - x_hat) ** 2)
+        kl_q = jnp.mean(FactorizedVAE.kl_divergence(q_mean, q_logvar))
+        kl_g = jnp.mean(FactorizedVAE.kl_divergence(g_mean, g_logvar))
+        kl = kl_q + kl_g
+        quotient_invariance = jnp.mean(
+            jnp.sum((q_mean - q_pair_mean) ** 2, axis=-1),
+        )
+        gauge_equivariance = jnp.mean(
+            jnp.sum((g_pair_mean - acted_gauge) ** 2, axis=-1),
+        )
+        decoder_equivariance = jnp.mean((paired_recon - paired_batch) ** 2)
+        loss = (
+            mse
+            + beta * kl
+            + quotient_weight * quotient_invariance
+            + gauge_weight * gauge_equivariance
+            + decoder_weight * decoder_equivariance
+            + action_reg_weight * action_reg
+        )
+        return {
+            'loss': loss,
+            'mse': mse,
+            'kl': kl,
+            'quotient_invariance': quotient_invariance,
+            'gauge_equivariance': gauge_equivariance,
+            'decoder_equivariance': decoder_equivariance,
+            'action_regularizer': action_reg,
+        }, z
+
+    return eval_step_factorized_lattice_vae
 
 
 @jax.jit

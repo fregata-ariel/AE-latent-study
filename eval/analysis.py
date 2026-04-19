@@ -14,6 +14,7 @@ from eval.metrics import (
     compute_reconstruction_error, encode_dataset, check_periodicity,
     check_modular_invariance, compute_j_correlation,
     compute_quotient_chart_quality,
+    compute_factorized_consistency,
 )
 from eval.visualization import (
     plot_training_curves,
@@ -32,6 +33,8 @@ def pca_latent(
     dataset: Dataset,
     n_components: int = 2,
     is_vae: bool = False,
+    latent_type: str | None = None,
+    latent_view: str = 'primary',
 ) -> tuple[np.ndarray, PCA]:
     """Apply PCA to latent representations.
 
@@ -44,7 +47,10 @@ def pca_latent(
     Returns:
         Tuple of (projected_latents, fitted_pca_object).
     """
-    z = np.array(encode_dataset(state, dataset, is_vae=is_vae))
+    z = np.array(encode_dataset(
+        state, dataset, is_vae=is_vae, latent_type=latent_type,
+        latent_view=latent_view,
+    ))
     pca = PCA(n_components=n_components)
     z_pca = pca.fit_transform(z)
     return z_pca, pca
@@ -55,6 +61,8 @@ def umap_latent(
     dataset: Dataset,
     n_components: int = 2,
     is_vae: bool = False,
+    latent_type: str | None = None,
+    latent_view: str = 'primary',
 ) -> np.ndarray:
     """Apply UMAP to latent representations.
 
@@ -74,7 +82,10 @@ def umap_latent(
     except ImportError:
         raise ImportError("umap-learn is required. Install with: pip install umap-learn")
 
-    z = np.array(encode_dataset(state, dataset, is_vae=is_vae))
+    z = np.array(encode_dataset(
+        state, dataset, is_vae=is_vae, latent_type=latent_type,
+        latent_view=latent_view,
+    ))
     reducer = umap.UMAP(n_components=n_components, random_state=42)
     return reducer.fit_transform(z)
 
@@ -103,7 +114,8 @@ def run_full_evaluation(
     results_dir = os.path.join(workdir, config.eval.output_dir)
     os.makedirs(results_dir, exist_ok=True)
 
-    is_vae = config.model.latent_type == 'vae'
+    latent_type = config.model.latent_type
+    is_vae = latent_type in ('vae', 'factorized_vae')
     data_type = getattr(config.data, 'data_type', 'torus')
     summary = {}
 
@@ -113,6 +125,7 @@ def run_full_evaluation(
     recon_batch_size = min(512, len(test_ds)) if len(test_ds) > 0 else 512
     recon_metrics = compute_reconstruction_error(
         state, test_ds, batch_size=recon_batch_size, is_vae=is_vae,
+        latent_type=latent_type,
     )
     summary['reconstruction'] = recon_metrics
     print(f"  Evaluated test samples (actual): {recon_metrics['n_samples']}")
@@ -121,7 +134,9 @@ def run_full_evaluation(
     # 2. Periodicity check (T^1 only)
     if data_type == 'torus' and config.data.torus_dim == 1:
         print("Checking periodicity...")
-        period_metrics = check_periodicity(state, config, is_vae=is_vae)
+        period_metrics = check_periodicity(
+            state, config, is_vae=is_vae, latent_type=latent_type,
+        )
         summary['periodicity'] = period_metrics
         print(f"  Latent distance (0 vs 2pi): {period_metrics['latent_distance']:.6f}")
 
@@ -135,7 +150,7 @@ def run_full_evaluation(
 
     # 4. Reconstruction examples
     fig = plot_reconstructions(
-        state, test_ds, n_examples=8, is_vae=is_vae,
+        state, test_ds, n_examples=8, is_vae=is_vae, latent_type=latent_type,
         save_path=os.path.join(results_dir, 'reconstructions.png'),
     )
     plt.close(fig)
@@ -145,13 +160,13 @@ def run_full_evaluation(
     if data_type == 'lattice':
         # --- Lattice-specific evaluation ---
         z_np = _run_lattice_evaluation(
-            state, config, train_ds, test_ds, results_dir, summary, is_vae,
+            state, config, train_ds, test_ds, results_dir, summary, latent_type,
         )
     else:
         # --- Torus-specific evaluation ---
         # 5. Latent scatter
         fig = plot_latent_scatter(
-            state, train_ds, config, is_vae=is_vae,
+            state, train_ds, config, is_vae=is_vae, latent_type=latent_type,
             save_path=os.path.join(results_dir, 'latent_scatter.png'),
         )
         plt.close(fig)
@@ -166,14 +181,16 @@ def run_full_evaluation(
         # 7. Periodicity check plot (T^1)
         if config.data.torus_dim == 1:
             fig = plot_periodicity_check(
-                state, config, is_vae=is_vae,
+                state, config, is_vae=is_vae, latent_type=latent_type,
                 save_path=os.path.join(results_dir, 'periodicity_check.png'),
             )
             plt.close(fig)
 
     # 8. PCA analysis (useful for higher-dim latent)
     if z_np is None:
-        z_np = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
+        z_np = np.array(encode_dataset(
+            state, train_ds, is_vae=is_vae, latent_type=latent_type,
+        ))
 
     pca_threshold = 2 if data_type == 'lattice' else 3
     if z_np.shape[1] >= pca_threshold:
@@ -197,7 +214,7 @@ def _run_lattice_evaluation(
     test_ds: Dataset,
     results_dir: str,
     summary: dict,
-    is_vae: bool,
+    latent_type: str,
 ) -> np.ndarray:
     """Run lattice-specific evaluation steps.
 
@@ -213,12 +230,16 @@ def _run_lattice_evaluation(
     # 5. Lattice latent scatter (with τ coloring and fundamental domain)
     print("  Generating lattice scatter plots...")
     fig = plot_lattice_latent_scatter(
-        state, train_ds, config, is_vae=is_vae,
+        state, train_ds, config, is_vae=(latent_type in ('vae', 'factorized_vae')),
+        latent_type=latent_type,
         save_path=os.path.join(results_dir, 'lattice_latent_scatter.png'),
     )
     plt.close(fig)
 
-    z = np.array(encode_dataset(state, train_ds, is_vae=is_vae))
+    latent_view = 'quotient' if latent_type == 'factorized_vae' else 'primary'
+    z = np.array(encode_dataset(
+        state, train_ds, latent_type=latent_type, latent_view=latent_view,
+    ))
 
     # 6. j-invariant correlation
     if train_ds.j_invariant is not None:
@@ -255,9 +276,32 @@ def _run_lattice_evaluation(
         )
         plt.close(fig)
 
+    if latent_type == 'factorized_vae':
+        print("  Computing factorized consistency...")
+        summary['factorized_consistency'] = compute_factorized_consistency(
+            state, train_ds, config,
+        )
+        consistency = summary['factorized_consistency']
+        print(
+            f"  Quotient partner rank: {consistency['quotient_partner_rank_percentile_mean']:.6f}"
+        )
+        print(
+            f"  Gauge equivariance MSE: {consistency['gauge_equivariance_mse']:.6f}"
+        )
+        print(
+            f"  Decoder equivariance MSE: {consistency['decoder_equivariance_mse']:.6f}"
+        )
+
     # 8. SL₂(Z) modular invariance check
     print("  Checking modular invariance...")
-    mod_inv = check_modular_invariance(state, config, n_pairs=100, is_vae=is_vae)
+    mod_inv = check_modular_invariance(
+        state,
+        config,
+        n_pairs=100,
+        is_vae=(latent_type in ('vae', 'factorized_vae')),
+        latent_type=latent_type,
+        latent_view=latent_view,
+    )
     summary['modular_invariance'] = mod_inv
     print(f"  SL₂(Z) mean latent dist: {mod_inv['mean_latent_distance']:.6f}")
     print(f"  SL₂(Z) max latent dist:  {mod_inv['max_latent_distance']:.6f}")

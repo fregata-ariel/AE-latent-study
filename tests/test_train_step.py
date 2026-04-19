@@ -8,6 +8,7 @@ from configs.lattice_default import get_config as get_lattice_config
 from models import create_model
 from train.train_state import create_train_state
 from train.train_step import (
+    _make_train_step_factorized_lattice_vae,
     _make_train_step_lattice_invariant_vae,
     _make_train_step_vae,
 )
@@ -39,6 +40,27 @@ def _make_state_and_batches():
     batch = jax.random.normal(batch_key, (config.train.batch_size, config.data.signal_length))
     paired_batch = jax.random.normal(pair_key, (config.train.batch_size, config.data.signal_length))
     return config, state, batch, paired_batch
+
+
+def _tiny_factorized_lattice_config():
+    config = get_lattice_config()
+    config.seed = 0
+    config.data.signal_length = 32
+    config.data.n_train = 16
+    config.model.latent_type = 'factorized_vae'
+    config.model.latent_dim = 6
+    config.model.quotient_dim = 2
+    config.model.gauge_dim = 4
+    config.model.encoder_hidden = (16, 8)
+    config.model.decoder_hidden = (8, 16)
+    config.model.vae_beta = 0.01
+    config.train.batch_size = 8
+    config.train.num_epochs = 1
+    config.train.modular_invariance_weight = 0.1
+    config.train.gauge_equivariance_weight = 0.03
+    config.train.decoder_equivariance_weight = 0.03
+    config.train.gauge_action_reg_weight = 1e-4
+    return config
 
 
 def test_train_step_lattice_invariant_vae_reports_all_terms():
@@ -102,3 +124,43 @@ def test_train_step_lattice_invariant_vae_weight_zero_matches_vae_step():
         np.testing.assert_allclose(np.array(ref_leaf), np.array(inv_leaf), atol=1e-7)
 
     np.testing.assert_array_equal(np.array(next_ref.rng), np.array(next_inv.rng))
+
+
+def test_train_step_factorized_lattice_vae_reports_all_terms():
+    config = _tiny_factorized_lattice_config()
+    key = jax.random.PRNGKey(config.seed)
+    model = create_model(config)
+    state = create_train_state(config, model, key)
+
+    batch_key, pair_key = jax.random.split(jax.random.PRNGKey(321))
+    batch = jax.random.normal(
+        batch_key, (config.train.batch_size, config.data.signal_length),
+    )
+    paired_batch = jax.random.normal(
+        pair_key, (config.train.batch_size, config.data.signal_length),
+    )
+    transform_ids = jnp.array([0, 1, 2, 0, 1, 2, 0, 1], dtype=jnp.int32)
+
+    step_fn = _make_train_step_factorized_lattice_vae(
+        model,
+        config.model.vae_beta,
+        config.train.modular_invariance_weight,
+        config.train.gauge_equivariance_weight,
+        config.train.decoder_equivariance_weight,
+        config.train.gauge_action_reg_weight,
+    )
+    next_state, metrics = step_fn(state, batch, paired_batch, transform_ids)
+
+    assert next_state.rng.shape == state.rng.shape
+    for key in (
+        'loss',
+        'mse',
+        'kl',
+        'quotient_invariance',
+        'gauge_equivariance',
+        'decoder_equivariance',
+        'action_regularizer',
+    ):
+        assert key in metrics
+        assert np.isfinite(float(metrics[key]))
+    assert float(metrics['decoder_equivariance']) >= 0.0
