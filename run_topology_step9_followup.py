@@ -128,6 +128,7 @@ def run_all(
         report_path=phaseb_report_path,
         roadmap_path=roadmap_path,
         experiments=experiments,
+        focus_run_name=winner_name,
     )
     combined = {
         'winner_name': winner_name,

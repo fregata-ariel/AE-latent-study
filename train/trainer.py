@@ -77,6 +77,9 @@ def _evaluate(
             getattr(config.train, 'jacobian_n_neighbors', 8),
             getattr(config.train, 'quotient_logdet_weight', 0.0),
             getattr(config.train, 'quotient_logdet_ratio_target', 0.10),
+            getattr(config.train, 'contrastive_local_weight', 0.0),
+            getattr(config.train, 'contrastive_n_neighbors', 8),
+            getattr(config.train, 'contrastive_temperature', 0.10),
             getattr(config.train, 'j_rank_preserving_weight', 0.0),
             getattr(config.train, 'j_rank_temperature', 0.10),
             getattr(config.train, 'j_rank_min_delta', 0.10),
@@ -385,6 +388,9 @@ def train_and_evaluate(
             getattr(config.train, 'jacobian_n_neighbors', 8),
             getattr(config.train, 'quotient_logdet_weight', 0.0),
             getattr(config.train, 'quotient_logdet_ratio_target', 0.10),
+            getattr(config.train, 'contrastive_local_weight', 0.0),
+            getattr(config.train, 'contrastive_n_neighbors', 8),
+            getattr(config.train, 'contrastive_temperature', 0.10),
             getattr(config.train, 'j_rank_preserving_weight', 0.0),
             getattr(config.train, 'j_rank_temperature', 0.10),
             getattr(config.train, 'j_rank_min_delta', 0.10),
@@ -424,6 +430,7 @@ def train_and_evaluate(
         history['train_quotient_spread_loss'] = []
         history['train_quotient_jacobian_gram_loss'] = []
         history['train_quotient_logdet_loss'] = []
+        history['train_quotient_contrastive_local_loss'] = []
         history['train_quotient_j_rank_loss'] = []
         history['train_quotient_teacher_distill_loss'] = []
 
@@ -518,6 +525,9 @@ def train_and_evaluate(
             )
             history['train_quotient_logdet_loss'].append(
                 train_metrics.get('quotient_logdet_loss', 0.0),
+            )
+            history['train_quotient_contrastive_local_loss'].append(
+                train_metrics.get('quotient_contrastive_local_loss', 0.0),
             )
             history['train_quotient_j_rank_loss'].append(
                 train_metrics.get('quotient_j_rank_loss', 0.0),

@@ -4,9 +4,12 @@
 
 - Phase B focuses on PH trajectories themselves, with `4→3→2→1` used as the main comparison axis.
 - Source Phase A branch: `A`
-- Phase B primary branch: `A1`
-- Interpretation: The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.
-- Recommended next step: Prototype an equivariant or factorized latent model that preserves a 2D quotient chart.
+- Global Phase B branch: `A1`
+- Global interpretation: The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.
+- Global recommended next step: Prototype an equivariant or factorized latent model that preserves a 2D quotient chart.
+- Focus run: `lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010`
+- Focus decision: `A2 continues`
+- Focus interpretation: The global VAE-anchor decision may remain A1, but the latest factorized focus run has not met the balanced k=2 criteria.
 
 ## Control Anchors
 
@@ -40,9 +43,29 @@
 
 ## Decision
 
-- Primary branch: `A1`
-- Summary: The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.
-- Next step: Prototype an equivariant or factorized latent model that preserves a 2D quotient chart.
+- Global primary branch: `A1`
+- Global summary: The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.
+- Global next step: Prototype an equivariant or factorized latent model that preserves a 2D quotient chart.
+- Global scope: VAE/invariance anchors and all representative runs.
+
+### Focus Decision
+
+- Focus run: `lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010`
+- Focus branch: `A2 continues`
+- Focus accepted: `False`
+- Focus summary: The global VAE-anchor decision may remain A1, but the latest factorized focus run has not met the balanced k=2 criteria.
+- Focus next step: Continue A2 with stronger contrastive / semantic geometry for the factorized branch.
+- Focus scope: latest factorized winner only, so it can disagree with the global VAE-anchor branch.
+
+#### Focus Evidence
+
+- Focus run: `lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010`.
+- k=2 rank=0.1006, overlap=0.0533, eff_dim=1.9862, j=0.7545.
+- Passed criteria: k=2 rank <= 0.15, k=2 eff_dim >= 1.55.
+- Failed criteria: k=2 overlap >= 0.058, k=2 j Spearman >= 0.85, k=1 collapse visible.
+- Collapse evidence: H1 collapses from k=2 to k=1.
+
+### Global Branches
 
 ### Active Branches
 

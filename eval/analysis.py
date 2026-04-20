@@ -307,6 +307,9 @@ def _run_lattice_evaluation(
             f"  Quotient j-rank loss: {consistency.get('quotient_j_rank_loss', 0.0):.6f}"
         )
         print(
+            f"  Quotient contrastive loss: {consistency.get('quotient_contrastive_local_loss', 0.0):.6f}"
+        )
+        print(
             f"  Quotient teacher loss: {consistency.get('quotient_teacher_distill_loss', 0.0):.6f}"
         )
         print(

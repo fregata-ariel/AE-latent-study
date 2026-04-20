@@ -255,6 +255,39 @@ def _quotient_teacher_distill_loss(
     return jnp.mean(((quotient_knn / scale) - (teacher_knn / scale)) ** 2)
 
 
+def _quotient_contrastive_local_loss(
+    tau_fd_coords: jnp.ndarray,
+    quotient_mean: jnp.ndarray,
+    n_neighbors: int,
+    temperature: float,
+) -> jnp.ndarray:
+    """Pull τ_F local neighbors together in quotient space against batch negatives."""
+    n_points = quotient_mean.shape[0]
+    if n_points <= 1:
+        return jnp.asarray(0.0, dtype=quotient_mean.dtype)
+
+    knn_idx, k_use = _tau_knn_indices(tau_fd_coords, n_neighbors)
+    if k_use <= 0:
+        return jnp.asarray(0.0, dtype=quotient_mean.dtype)
+
+    diffs = quotient_mean[:, None, :] - quotient_mean[None, :, :]
+    squared_dists = jnp.sum(diffs ** 2, axis=-1)
+    temp = jnp.maximum(jnp.asarray(temperature, dtype=quotient_mean.dtype), 1e-6)
+    logits = -squared_dists / temp
+
+    self_mask = jnp.eye(n_points, dtype=bool)
+    logits_nonself = jnp.where(self_mask, -jnp.inf, logits)
+
+    row_idx = jnp.arange(n_points)[:, None]
+    positive_mask = jnp.zeros((n_points, n_points), dtype=bool)
+    positive_mask = positive_mask.at[row_idx, knn_idx].set(True)
+    positive_logits = jnp.where(positive_mask, logits, -jnp.inf)
+
+    log_pos = jax.nn.logsumexp(positive_logits, axis=1)
+    log_all = jax.nn.logsumexp(logits_nonself, axis=1)
+    return jnp.mean(-(log_pos - log_all))
+
+
 @jax.jit
 def train_step_ae(
     state: TrainState,
@@ -393,6 +426,9 @@ def _make_train_step_factorized_lattice_vae(
     jacobian_n_neighbors: int = 8,
     quotient_logdet_weight: float = 0.0,
     quotient_logdet_ratio_target: float = 0.10,
+    contrastive_local_weight: float = 0.0,
+    contrastive_n_neighbors: int = 8,
+    contrastive_temperature: float = 0.10,
     j_rank_preserving_weight: float = 0.0,
     j_rank_temperature: float = 0.10,
     j_rank_min_delta: float = 0.10,
@@ -474,6 +510,12 @@ def _make_train_step_factorized_lattice_vae(
                 quotient_logdet_ratio_target,
                 quotient_trace_cap_ratio,
             )
+            quotient_contrastive_local = _quotient_contrastive_local_loss(
+                tau_fd_coords,
+                q_mean,
+                contrastive_n_neighbors,
+                contrastive_temperature,
+            )
             if j_rank_preserving_weight > 0.0:
                 quotient_j_rank, quotient_j_rank_target_std = _quotient_j_rank_loss(
                     q_mean,
@@ -504,6 +546,7 @@ def _make_train_step_factorized_lattice_vae(
                 + quotient_spread_weight * quotient_spread
                 + jacobian_gram_weight * quotient_jacobian_gram
                 + quotient_logdet_weight * quotient_logdet
+                + contrastive_local_weight * quotient_contrastive_local
                 + j_rank_preserving_weight * quotient_j_rank
                 + teacher_distill_weight * quotient_teacher_distill
             )
@@ -520,6 +563,7 @@ def _make_train_step_factorized_lattice_vae(
                 'quotient_spread_loss': quotient_spread,
                 'quotient_jacobian_gram_loss': quotient_jacobian_gram,
                 'quotient_logdet_loss': quotient_logdet,
+                'quotient_contrastive_local_loss': quotient_contrastive_local,
                 'quotient_j_rank_loss': quotient_j_rank,
                 'quotient_j_rank_target_std': quotient_j_rank_target_std,
                 'quotient_teacher_distill_loss': quotient_teacher_distill,
@@ -595,6 +639,9 @@ def _make_eval_step_factorized_lattice_vae(
     jacobian_n_neighbors: int = 8,
     quotient_logdet_weight: float = 0.0,
     quotient_logdet_ratio_target: float = 0.10,
+    contrastive_local_weight: float = 0.0,
+    contrastive_n_neighbors: int = 8,
+    contrastive_temperature: float = 0.10,
     j_rank_preserving_weight: float = 0.0,
     j_rank_temperature: float = 0.10,
     j_rank_min_delta: float = 0.10,
@@ -673,6 +720,12 @@ def _make_eval_step_factorized_lattice_vae(
             quotient_logdet_ratio_target,
             quotient_trace_cap_ratio,
         )
+        quotient_contrastive_local = _quotient_contrastive_local_loss(
+            tau_fd_coords,
+            q_mean,
+            contrastive_n_neighbors,
+            contrastive_temperature,
+        )
         if j_rank_preserving_weight > 0.0:
             quotient_j_rank, quotient_j_rank_target_std = _quotient_j_rank_loss(
                 q_mean,
@@ -703,6 +756,7 @@ def _make_eval_step_factorized_lattice_vae(
             + quotient_spread_weight * quotient_spread
             + jacobian_gram_weight * quotient_jacobian_gram
             + quotient_logdet_weight * quotient_logdet
+            + contrastive_local_weight * quotient_contrastive_local
             + j_rank_preserving_weight * quotient_j_rank
             + teacher_distill_weight * quotient_teacher_distill
         )
@@ -719,6 +773,7 @@ def _make_eval_step_factorized_lattice_vae(
             'quotient_spread_loss': quotient_spread,
             'quotient_jacobian_gram_loss': quotient_jacobian_gram,
             'quotient_logdet_loss': quotient_logdet,
+            'quotient_contrastive_local_loss': quotient_contrastive_local,
             'quotient_j_rank_loss': quotient_j_rank,
             'quotient_j_rank_target_std': quotient_j_rank_target_std,
             'quotient_teacher_distill_loss': quotient_teacher_distill,

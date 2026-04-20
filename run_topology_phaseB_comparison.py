@@ -223,11 +223,95 @@ def choose_next_branch(
     }
 
 
+def _focus_collapse_visible(summary: dict) -> tuple[bool, list[str]]:
+    """Return whether k=1 collapse is visible for a focus run."""
+    dim2 = _dim_metrics(summary, 2)
+    dim1 = _dim_metrics(summary, 1)
+    conditions = []
+    if dim1.get('trustworthiness', 0.0) <= dim2.get('trustworthiness', 0.0) - 0.05:
+        conditions.append('trust drops from k=2 to k=1')
+    if dim1.get('knn_jaccard_mean', 0.0) <= 0.75 * dim2.get('knn_jaccard_mean', 0.0):
+        conditions.append('overlap drops from k=2 to k=1')
+    if dim1.get('h1_total_persistence', 0.0) <= 0.1 * dim2.get('h1_total_persistence', 0.0):
+        conditions.append('H1 collapses from k=2 to k=1')
+    if dim1.get('max_abs_logabsj_spearman', 0.0) <= 0.5 * dim2.get('max_abs_logabsj_spearman', 0.0):
+        conditions.append('j Spearman drops from k=2 to k=1')
+    return len(conditions) >= 2, conditions
+
+
+def choose_focus_branch(
+    topology_runs: dict[str, dict],
+    focus_run_name: str | None,
+) -> dict | None:
+    """Classify a latest focus run alongside the global Phase B decision."""
+    if not focus_run_name:
+        return None
+
+    summary = topology_runs.get(focus_run_name)
+    if summary is None:
+        return {
+            'focus_run_name': focus_run_name,
+            'primary_branch': 'A2 continues',
+            'summary': 'Focus run was not available in the topology comparison, so the factorized branch cannot be promoted.',
+            'recommended_next_step': 'Regenerate topology diagnostics for the selected focus run.',
+            'accepted': False,
+            'evidence': [f'Focus run `{focus_run_name}` is missing.'],
+        }
+
+    dim2 = _dim_metrics(summary, 2)
+    collapse_visible, collapse_evidence = _focus_collapse_visible(summary)
+    criteria = {
+        'k=2 rank <= 0.15': dim2.get('partner_rank_percentile_mean', float('inf')) <= 0.15,
+        'k=2 overlap >= 0.058': dim2.get('knn_jaccard_mean', float('-inf')) >= 0.058,
+        'k=2 eff_dim >= 1.55': dim2.get('effective_dimension', float('-inf')) >= 1.55,
+        'k=2 j Spearman >= 0.85': dim2.get('max_abs_logabsj_spearman', float('-inf')) >= 0.85,
+        'k=1 collapse visible': collapse_visible,
+    }
+    accepted = all(criteria.values())
+    evidence = [
+        f"Focus run: `{focus_run_name}`.",
+        f"k=2 rank={_fmt(dim2.get('partner_rank_percentile_mean'))}, "
+        f"overlap={_fmt(dim2.get('knn_jaccard_mean'))}, "
+        f"eff_dim={_fmt(dim2.get('effective_dimension'))}, "
+        f"j={_fmt(dim2.get('max_abs_logabsj_spearman'))}.",
+        'Passed criteria: '
+        + (', '.join(name for name, passed in criteria.items() if passed) or 'none')
+        + '.',
+        'Failed criteria: '
+        + (', '.join(name for name, passed in criteria.items() if not passed) or 'none')
+        + '.',
+    ]
+    if collapse_evidence:
+        evidence.append('Collapse evidence: ' + '; '.join(collapse_evidence) + '.')
+
+    if accepted:
+        return {
+            'focus_run_name': focus_run_name,
+            'primary_branch': 'A1-return candidate',
+            'summary': 'The focus factorized run satisfies the k=2 chart / partner / j criteria and still collapses at k=1.',
+            'recommended_next_step': 'Treat this run as an A1 return candidate and compare it against the next model-family options.',
+            'accepted': True,
+            'criteria': criteria,
+            'evidence': evidence,
+        }
+
+    return {
+        'focus_run_name': focus_run_name,
+        'primary_branch': 'A2 continues',
+        'summary': 'The global VAE-anchor decision may remain A1, but the latest factorized focus run has not met the balanced k=2 criteria.',
+        'recommended_next_step': 'Continue A2 with stronger contrastive / semantic geometry for the factorized branch.',
+        'accepted': False,
+        'criteria': criteria,
+        'evidence': evidence,
+    }
+
+
 def write_phaseb_report(
     topology_runs: dict[str, dict],
     decision: dict,
     phasea_branch: dict,
     output_path: str,
+    focus_decision: dict | None = None,
 ) -> None:
     """Write the Phase B markdown report."""
     lines = [
@@ -237,15 +321,23 @@ def write_phaseb_report(
         '',
         '- Phase B focuses on PH trajectories themselves, with `4→3→2→1` used as the main comparison axis.',
         f"- Source Phase A branch: `{phasea_branch['branch']}`",
-        f"- Phase B primary branch: `{decision['primary_branch']}`",
-        f"- Interpretation: {decision['summary']}",
-        f"- Recommended next step: {decision['recommended_next_step']}",
+        f"- Global Phase B branch: `{decision['primary_branch']}`",
+        f"- Global interpretation: {decision['summary']}",
+        f"- Global recommended next step: {decision['recommended_next_step']}",
+    ]
+    if focus_decision is not None:
+        lines.extend([
+            f"- Focus run: `{focus_decision['focus_run_name']}`",
+            f"- Focus decision: `{focus_decision['primary_branch']}`",
+            f"- Focus interpretation: {focus_decision['summary']}",
+        ])
+    lines.extend([
         '',
         '## Control Anchors',
         '',
         '| Run | k=2 trust | k=1 trust | k=2 H1 total | k=1 H1 total | 2→1 H1 bottleneck |',
         '|---|---|---|---|---|---|',
-    ]
+    ])
 
     for run_name in ('t2_standard', 't2_torus'):
         summary = topology_runs.get(run_name)
@@ -309,9 +401,29 @@ def write_phaseb_report(
         '',
         '## Decision',
         '',
-        f"- Primary branch: `{decision['primary_branch']}`",
-        f"- Summary: {decision['summary']}",
-        f"- Next step: {decision['recommended_next_step']}",
+        f"- Global primary branch: `{decision['primary_branch']}`",
+        f"- Global summary: {decision['summary']}",
+        f"- Global next step: {decision['recommended_next_step']}",
+        '- Global scope: VAE/invariance anchors and all representative runs.',
+    ])
+    if focus_decision is not None:
+        lines.extend([
+            '',
+            '### Focus Decision',
+            '',
+            f"- Focus run: `{focus_decision['focus_run_name']}`",
+            f"- Focus branch: `{focus_decision['primary_branch']}`",
+            f"- Focus accepted: `{focus_decision['accepted']}`",
+            f"- Focus summary: {focus_decision['summary']}",
+            f"- Focus next step: {focus_decision['recommended_next_step']}",
+            '- Focus scope: latest factorized winner only, so it can disagree with the global VAE-anchor branch.',
+            '',
+            '#### Focus Evidence',
+            '',
+        ])
+        lines.extend([f"- {item}" for item in focus_decision['evidence']])
+        lines.extend(['', '### Global Branches'])
+    lines.extend([
         '',
         '### Active Branches',
         '',
@@ -332,17 +444,35 @@ def write_roadmap(
     decision: dict,
     phasea_branch: dict,
     output_path: str,
+    focus_decision: dict | None = None,
 ) -> None:
     """Write a short living roadmap focused on the immediate next branches."""
+    current_recommendation = decision['primary_branch']
+    current_why = decision['summary']
+    diagnostic_basis = 'Topology Phase B global decision'
+    if focus_decision is not None:
+        current_recommendation = focus_decision['primary_branch']
+        current_why = focus_decision['summary']
+        diagnostic_basis = 'Topology Phase B focus decision'
+
     lines = [
         '# AE Latent Study Roadmap',
         '',
         '## Current Node',
         '',
         f"- Confirmed state: `Branch {phasea_branch['branch']}`",
-        '- Current diagnostic basis: `Topology Phase B`',
-        f"- Current recommendation: `{decision['primary_branch']}`",
-        f"- Why now: {decision['summary']}",
+        f"- Current diagnostic basis: `{diagnostic_basis}`",
+        f"- Current recommendation: `{current_recommendation}`",
+        f"- Why now: {current_why}",
+    ]
+    if focus_decision is not None:
+        lines.extend([
+            f"- Global Phase B branch: `{decision['primary_branch']}`",
+            f"- Focus run: `{focus_decision['focus_run_name']}`",
+            f"- Focus branch: `{focus_decision['primary_branch']}`",
+            '- Interpretation note: global and focus decisions are intentionally separated so VAE-anchor success does not promote the latest factorized branch prematurely.',
+        ])
+    lines.extend([
         '',
         '## Active Branches',
         '',
@@ -353,7 +483,7 @@ def write_roadmap(
         '',
         '### A2. Chart-Preserving Regularizer',
         '',
-        '- Trigger: PH still shows fragility before `k=2` in the fundamental-domain runs.',
+        '- Trigger: PH still shows fragility before `k=2` in the fundamental-domain runs or the latest factorized focus run misses balanced k=2 criteria.',
         '- Immediate implementation idea: add a regularizer that preserves local chart geometry before introducing a richer latent action.',
         '',
         '### A3. Sampling Redesign',
@@ -370,10 +500,11 @@ def write_roadmap(
         '## Update Trigger',
         '',
         '- Update this roadmap whenever `walkthrough-topology-phaseB.md` changes its primary branch recommendation.',
+        '- When a focus decision is present, update the current recommendation from the focus branch, not the global branch.',
         '- Promote `A1` if the fundamental-domain PH trajectories stay stable through `k=2` and the wide run does not clearly dominate.',
-        '- Promote `A2` if the PH comparison still looks fragile before `k=2`.',
+        '- Promote `A2` if the PH comparison still looks fragile before `k=2` or the focus branch remains below the balanced k=2 gate.',
         '- Promote `A3` if the wide run becomes the clearest `k=2` winner.',
-    ]
+    ])
 
     with open(output_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
@@ -386,6 +517,7 @@ def run_all(
     report_path: str = 'walkthrough-topology-phaseB.md',
     roadmap_path: str = 'ae-latent-study-roadmap.md',
     experiments: list[dict] | None = None,
+    focus_run_name: str | None = None,
 ) -> dict:
     """Run the post-hoc Phase B comparison on existing topology diagnostics."""
     os.makedirs(diagnostics_dir, exist_ok=True)
@@ -402,6 +534,7 @@ def run_all(
 
     phasea_branch = classify_branch(topology_runs)
     decision = choose_next_branch(topology_runs, phasea_branch)
+    focus_decision = choose_focus_branch(topology_runs, focus_run_name)
 
     ordered_runs = [name for name in RUN_ORDER if name in topology_runs]
     ordered_runs.extend(
@@ -442,14 +575,26 @@ def run_all(
         'run_order': ordered_runs,
         'topology_diagnostics': topology_runs,
         'phaseB_decision': decision,
+        'focus_decision': focus_decision,
     }
 
     summary_path = os.path.join(diagnostics_dir, summary_filename)
     with open(summary_path, 'w') as f:
         json.dump(combined, f, indent=2)
 
-    write_phaseb_report(topology_runs, decision, phasea_branch, output_path=report_path)
-    write_roadmap(decision, phasea_branch, output_path=roadmap_path)
+    write_phaseb_report(
+        topology_runs,
+        decision,
+        phasea_branch,
+        output_path=report_path,
+        focus_decision=focus_decision,
+    )
+    write_roadmap(
+        decision,
+        phasea_branch,
+        output_path=roadmap_path,
+        focus_decision=focus_decision,
+    )
 
     print(f"\n{'=' * 60}")
     print('  Topology Phase B comparison complete!')
@@ -476,6 +621,9 @@ def run_all(
 
     print(f"\nPrimary next branch: {decision['primary_branch']}")
     print(decision['summary'])
+    if focus_decision is not None:
+        print(f"Focus branch for {focus_decision['focus_run_name']}: {focus_decision['primary_branch']}")
+        print(focus_decision['summary'])
     return combined
 
 

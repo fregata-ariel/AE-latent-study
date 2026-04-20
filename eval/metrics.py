@@ -550,6 +550,45 @@ def _compute_quotient_logdet_metrics(
     return loss, quotient_logdet, tau_logdet, quotient_eigs, tau_eigs, tau_trace
 
 
+def _compute_quotient_contrastive_local_metrics(
+    tau_coords: np.ndarray,
+    quotient_coords: np.ndarray,
+    n_neighbors: int,
+    temperature: float,
+) -> float:
+    """Return τ_F kNN supervised-contrastive loss in quotient coordinates."""
+    tau = np.asarray(tau_coords, dtype=float)
+    quotient = np.asarray(quotient_coords, dtype=float)
+    n_samples = tau.shape[0]
+    if n_samples <= 1:
+        return 0.0
+
+    k_use = min(max(1, int(n_neighbors)), max(1, n_samples - 1))
+    tau_dists = np.linalg.norm(tau[:, None, :] - tau[None, :, :], axis=-1)
+    tau_for_knn = tau_dists.copy()
+    np.fill_diagonal(tau_for_knn, np.inf)
+    knn_idx = np.argsort(tau_for_knn, axis=1)[:, :k_use]
+
+    q_diffs = quotient[:, None, :] - quotient[None, :, :]
+    q_sq_dists = np.sum(q_diffs ** 2, axis=-1)
+    logits = -q_sq_dists / max(float(temperature), 1e-6)
+
+    self_mask = np.eye(n_samples, dtype=bool)
+    positive_mask = np.zeros((n_samples, n_samples), dtype=bool)
+    positive_mask[np.arange(n_samples)[:, None], knn_idx] = True
+
+    def _row_logsumexp(values: np.ndarray) -> np.ndarray:
+        row_max = np.max(values, axis=1, keepdims=True)
+        stable = np.exp(values - row_max)
+        return (row_max[:, 0] + np.log(np.sum(stable, axis=1))).astype(float)
+
+    logits_nonself = np.where(self_mask, -np.inf, logits)
+    logits_positive = np.where(positive_mask, logits, -np.inf)
+    log_all = _row_logsumexp(logits_nonself)
+    log_pos = _row_logsumexp(logits_positive)
+    return float(np.mean(-(log_pos - log_all)))
+
+
 def _standardize_array(values: np.ndarray) -> tuple[np.ndarray, float]:
     """Standardize a 1D numpy array and return the original standard deviation."""
     vals = np.asarray(values, dtype=float).reshape(-1)
@@ -976,6 +1015,12 @@ def compute_factorized_consistency(
         ),
         trace_cap_ratio=getattr(config.train, 'quotient_trace_cap_ratio', 1.50),
     )
+    quotient_contrastive_local_loss = _compute_quotient_contrastive_local_metrics(
+        tau_coords,
+        quotient,
+        n_neighbors=getattr(config.train, 'contrastive_n_neighbors', 8),
+        temperature=getattr(config.train, 'contrastive_temperature', 0.10),
+    )
     if dataset.j_invariant is not None:
         j_values = np.asarray(dataset.j_invariant)
     else:
@@ -1035,6 +1080,7 @@ def compute_factorized_consistency(
         'quotient_spread_loss': quotient_spread_loss,
         'quotient_jacobian_gram_loss': quotient_jacobian_gram_loss,
         'quotient_logdet_loss': quotient_logdet_loss,
+        'quotient_contrastive_local_loss': quotient_contrastive_local_loss,
         'quotient_j_rank_loss': quotient_j_rank_loss,
         'quotient_j_rank_target_std': quotient_j_rank_target_std,
         'quotient_teacher_distill_loss': quotient_teacher_distill_loss,

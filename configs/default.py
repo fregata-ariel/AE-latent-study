@@ -59,6 +59,9 @@ def get_config() -> ml_collections.ConfigDict:
     config.train.jacobian_n_neighbors = 8
     config.train.quotient_logdet_weight = 0.0
     config.train.quotient_logdet_ratio_target = 0.10
+    config.train.contrastive_local_weight = 0.0
+    config.train.contrastive_n_neighbors = 8
+    config.train.contrastive_temperature = 0.10
     config.train.j_rank_preserving_weight = 0.0
     config.train.j_rank_temperature = 0.10
     config.train.j_rank_min_delta = 0.10

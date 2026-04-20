@@ -9,6 +9,7 @@ from models import create_model
 from train.train_state import create_train_state
 from train.train_step import (
     _make_train_step_factorized_lattice_vae,
+    _quotient_contrastive_local_loss,
     _quotient_jacobian_gram_loss,
     _quotient_j_rank_loss,
     _quotient_logdet_loss,
@@ -78,6 +79,9 @@ def _tiny_factorized_lattice_config():
     config.train.jacobian_n_neighbors = 4
     config.train.quotient_logdet_weight = 0.03
     config.train.quotient_logdet_ratio_target = 0.10
+    config.train.contrastive_local_weight = 0.03
+    config.train.contrastive_n_neighbors = 4
+    config.train.contrastive_temperature = 0.10
     config.train.j_rank_preserving_weight = 0.03
     config.train.j_rank_temperature = 0.10
     config.train.j_rank_min_delta = 0.10
@@ -301,6 +305,71 @@ def test_quotient_logdet_loss_detects_collapse_and_overexpansion():
 
     assert float(loss_collapsed) > float(loss_balanced)
     assert float(loss_overexpanded) > float(loss_balanced)
+
+
+def test_quotient_contrastive_local_loss_is_finite_on_collapse():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [0.1, 0.0],
+        [0.0, 0.1],
+        [4.0, 4.0],
+        [4.1, 4.0],
+        [4.0, 4.1],
+    ], dtype=jnp.float32)
+    collapsed = jnp.zeros_like(tau)
+
+    loss = _quotient_contrastive_local_loss(
+        tau,
+        collapsed,
+        n_neighbors=2,
+        temperature=0.10,
+    )
+
+    assert np.isfinite(float(loss))
+    assert float(loss) > 0.0
+
+
+def test_quotient_contrastive_local_loss_rewards_local_separation():
+    tau = jnp.array([
+        [0.0, 0.0],
+        [0.1, 0.0],
+        [0.0, 0.1],
+        [4.0, 4.0],
+        [4.1, 4.0],
+        [4.0, 4.1],
+    ], dtype=jnp.float32)
+    quotient_good = tau
+    quotient_scrambled = jnp.array([
+        [0.0, 0.0],
+        [4.0, 4.0],
+        [4.1, 4.0],
+        [0.1, 0.0],
+        [4.0, 4.1],
+        [0.0, 0.1],
+    ], dtype=jnp.float32)
+    quotient_collapsed = jnp.zeros_like(tau)
+
+    good_loss = _quotient_contrastive_local_loss(
+        tau,
+        quotient_good,
+        n_neighbors=2,
+        temperature=0.10,
+    )
+    scrambled_loss = _quotient_contrastive_local_loss(
+        tau,
+        quotient_scrambled,
+        n_neighbors=2,
+        temperature=0.10,
+    )
+    collapsed_loss = _quotient_contrastive_local_loss(
+        tau,
+        quotient_collapsed,
+        n_neighbors=2,
+        temperature=0.10,
+    )
+
+    assert float(good_loss) < float(scrambled_loss)
+    assert float(good_loss) < float(collapsed_loss)
 
 
 def test_quotient_j_rank_loss_prefers_ordered_quotient_scores():
@@ -528,6 +597,9 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         config.train.jacobian_n_neighbors,
         config.train.quotient_logdet_weight,
         config.train.quotient_logdet_ratio_target,
+        config.train.contrastive_local_weight,
+        config.train.contrastive_n_neighbors,
+        config.train.contrastive_temperature,
         config.train.j_rank_preserving_weight,
         config.train.j_rank_temperature,
         config.train.j_rank_min_delta,
@@ -558,6 +630,7 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         'quotient_spread_loss',
         'quotient_jacobian_gram_loss',
         'quotient_logdet_loss',
+        'quotient_contrastive_local_loss',
         'quotient_j_rank_loss',
         'quotient_j_rank_target_std',
         'quotient_teacher_distill_loss',
@@ -570,6 +643,7 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
 def test_train_step_factorized_teacher_weight_zero_is_finite_without_signal():
     config = _tiny_factorized_lattice_config()
     config.train.teacher_distill_weight = 0.0
+    config.train.contrastive_local_weight = 0.0
     key = jax.random.PRNGKey(config.seed)
     model = create_model(config)
     state = create_train_state(config, model, key)
@@ -613,6 +687,9 @@ def test_train_step_factorized_teacher_weight_zero_is_finite_without_signal():
         config.train.jacobian_n_neighbors,
         config.train.quotient_logdet_weight,
         config.train.quotient_logdet_ratio_target,
+        config.train.contrastive_local_weight,
+        config.train.contrastive_n_neighbors,
+        config.train.contrastive_temperature,
         config.train.j_rank_preserving_weight,
         config.train.j_rank_temperature,
         config.train.j_rank_min_delta,
@@ -630,6 +707,7 @@ def test_train_step_factorized_teacher_weight_zero_is_finite_without_signal():
     )
 
     assert np.isfinite(float(metrics['loss']))
+    assert np.isfinite(float(metrics['quotient_contrastive_local_loss']))
     np.testing.assert_allclose(
         np.array(metrics['quotient_teacher_distill_loss']),
         0.0,

@@ -3,9 +3,13 @@
 ## Current Node
 
 - Confirmed state: `Branch A`
-- Current diagnostic basis: `Topology Phase B`
-- Current recommendation: `A1`
-- Why now: The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.
+- Current diagnostic basis: `Topology Phase B focus decision`
+- Current recommendation: `A2 continues`
+- Why now: The global VAE-anchor decision may remain A1, but the latest factorized focus run has not met the balanced k=2 criteria.
+- Global Phase B branch: `A1`
+- Focus run: `lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010`
+- Focus branch: `A2 continues`
+- Interpretation note: global and focus decisions are intentionally separated so VAE-anchor success does not promote the latest factorized branch prematurely.
 
 ## Active Branches
 
@@ -16,7 +20,7 @@
 
 ### A2. Chart-Preserving Regularizer
 
-- Trigger: PH still shows fragility before `k=2` in the fundamental-domain runs.
+- Trigger: PH still shows fragility before `k=2` in the fundamental-domain runs or the latest factorized focus run misses balanced k=2 criteria.
 - Immediate implementation idea: add a regularizer that preserves local chart geometry before introducing a richer latent action.
 
 ### A3. Sampling Redesign
@@ -33,6 +37,7 @@
 ## Update Trigger
 
 - Update this roadmap whenever `walkthrough-topology-phaseB.md` changes its primary branch recommendation.
+- When a focus decision is present, update the current recommendation from the focus branch, not the global branch.
 - Promote `A1` if the fundamental-domain PH trajectories stay stable through `k=2` and the wide run does not clearly dominate.
-- Promote `A2` if the PH comparison still looks fragile before `k=2`.
+- Promote `A2` if the PH comparison still looks fragile before `k=2` or the focus branch remains below the balanced k=2 gate.
 - Promote `A3` if the wide run becomes the clearest `k=2` winner.

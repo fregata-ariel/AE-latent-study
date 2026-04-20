@@ -1,11 +1,11 @@
-"""Run the Step 8 topology Phase A/B follow-up for the selected winner."""
+"""Run the Step 10 topology Phase A/B follow-up for the selected winner."""
 
 from __future__ import annotations
 
 import json
 import os
 
-from run_lattice_step8_experiments import _select_best_run
+from run_lattice_step10_experiments import _select_best_run
 from run_latent_topology_diagnostics import run_all as run_topology_all
 from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 
@@ -18,16 +18,16 @@ DEFAULT_TOPOLOGY_OVERRIDES = {
 }
 
 
-def _load_step8_summaries(path: str) -> dict[str, dict]:
+def _load_step10_summaries(path: str) -> dict[str, dict]:
     with open(path) as f:
         return json.load(f)
 
 
-def _select_step8_winner(summary_path: str) -> tuple[str, dict, bool]:
-    summaries = _load_step8_summaries(summary_path)
+def _select_step10_winner(summary_path: str) -> tuple[str, dict, bool]:
+    summaries = _load_step10_summaries(summary_path)
     winner_name, winner_summary, used_gate = _select_best_run(summaries)
     if winner_name is None or winner_summary is None:
-        raise RuntimeError('No Step 8 summaries found; run Step 8 experiments first.')
+        raise RuntimeError('No Step 10 summaries found; run Step 10 experiments first.')
     return winner_name, winner_summary, used_gate
 
 
@@ -88,6 +88,16 @@ def _make_experiments(winner_name: str, config_overrides: dict) -> list[dict]:
             'config_overrides': config_overrides,
         },
         {
+            'name': 'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010_r100',
+            'kind': 'lattice',
+            'config_overrides': config_overrides,
+        },
+        {
+            'name': 'lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010',
+            'kind': 'lattice',
+            'config_overrides': config_overrides,
+        },
+        {
             'name': winner_name,
             'kind': 'lattice',
             'config_overrides': config_overrides,
@@ -97,17 +107,17 @@ def _make_experiments(winner_name: str, config_overrides: dict) -> list[dict]:
 
 def run_all(
     base_dir: str = 'runs',
-    step8_summary_path: str = 'runs/lattice_step8_summaries.json',
-    diagnostics_dir: str = 'runs/topology_diagnostics_step8',
-    phasea_report_path: str = 'walkthrough-topology-step8-phaseA.md',
-    phaseb_report_path: str = 'walkthrough-topology-step8-phaseB.md',
-    roadmap_path: str = 'ae-latent-study-roadmap-step8.md',
+    step10_summary_path: str = 'runs/lattice_step10_summaries.json',
+    diagnostics_dir: str = 'runs/topology_diagnostics_step10',
+    phasea_report_path: str = 'walkthrough-topology-step10-phaseA.md',
+    phaseb_report_path: str = 'walkthrough-topology-step10-phaseB.md',
+    roadmap_path: str = 'ae-latent-study-roadmap-step10.md',
     config_overrides: dict | None = None,
 ) -> dict:
-    """Run topology Phase A/B follow-up for the selected Step 8 winner."""
+    """Run topology Phase A/B follow-up for the selected Step 10 winner."""
     os.makedirs(diagnostics_dir, exist_ok=True)
     config_overrides = config_overrides or DEFAULT_TOPOLOGY_OVERRIDES
-    winner_name, winner_summary, used_gate = _select_step8_winner(step8_summary_path)
+    winner_name, winner_summary, used_gate = _select_step10_winner(step10_summary_path)
     experiments = _make_experiments(winner_name, config_overrides)
 
     phasea = run_topology_all(
@@ -125,7 +135,6 @@ def run_all(
         experiments=experiments,
         focus_run_name=winner_name,
     )
-
     combined = {
         'winner_name': winner_name,
         'winner_used_gate': used_gate,
@@ -134,11 +143,10 @@ def run_all(
         'phaseA': phasea,
         'phaseB': phaseb,
     }
-
-    with open(os.path.join(diagnostics_dir, 'step8_followup_summary.json'), 'w') as f:
+    with open(os.path.join(diagnostics_dir, 'step10_followup_summary.json'), 'w') as f:
         json.dump(combined, f, indent=2)
 
-    print(f"\nSelected Step 8 winner: {winner_name}")
+    print(f"\nSelected Step 10 winner: {winner_name}")
     print(f"Gate status: {'passed' if used_gate else 'fallback winner (no gate pass)'}")
     print(f"Phase A report: {phasea_report_path}")
     print(f"Phase B report: {phaseb_report_path}")

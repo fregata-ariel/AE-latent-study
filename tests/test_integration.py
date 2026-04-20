@@ -19,11 +19,17 @@ from run_lattice_step6_experiments import run_all as run_step6_all
 from run_lattice_step7_experiments import run_all as run_step7_all
 from run_lattice_step8_experiments import run_all as run_step8_all
 from run_lattice_step9_experiments import run_all as run_step9_all
+from run_lattice_step10_experiments import run_all as run_step10_all
 from run_latent_topology_diagnostics import run_all as run_topology_all
-from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
+from run_topology_phaseB_comparison import (
+    choose_focus_branch,
+    choose_next_branch,
+    run_all as run_topology_phaseb_all,
+)
 from run_topology_step7_followup import run_all as run_topology_step7_followup_all
 from run_topology_step8_followup import run_all as run_topology_step8_followup_all
 from run_topology_step9_followup import run_all as run_topology_step9_followup_all
+from run_topology_step10_followup import run_all as run_topology_step10_followup_all
 from eval.analysis import run_full_evaluation
 from train.trainer import train_and_evaluate
 
@@ -95,6 +101,9 @@ def _tiny_lattice_config(
         config.train.jacobian_n_neighbors = 4
         config.train.quotient_logdet_weight = 0.0
         config.train.quotient_logdet_ratio_target = 0.10
+        config.train.contrastive_local_weight = 0.0
+        config.train.contrastive_n_neighbors = 4
+        config.train.contrastive_temperature = 0.10
         config.train.j_rank_preserving_weight = 0.0
         config.train.j_rank_temperature = 0.10
         config.train.j_rank_min_delta = 0.10
@@ -246,6 +255,7 @@ def test_factorized_lattice_pipeline():
         assert 'train_quotient_chart_loss' in history
         assert 'train_quotient_variance_floor_loss' in history
         assert 'train_quotient_spread_loss' in history
+        assert 'train_quotient_contrastive_local_loss' in history
         assert 'train_quotient_j_rank_loss' in history
         assert 'train_quotient_teacher_distill_loss' in history
         assert 'factorized_consistency' in summary
@@ -257,6 +267,7 @@ def test_factorized_lattice_pipeline():
         assert 'quotient_var_dim0' in summary['factorized_consistency']
         assert 'quotient_spread_loss' in summary['factorized_consistency']
         assert 'quotient_cov_eig_min' in summary['factorized_consistency']
+        assert 'quotient_contrastive_local_loss' in summary['factorized_consistency']
         assert 'quotient_j_rank_loss' in summary['factorized_consistency']
         assert 'quotient_teacher_distill_loss' in summary['factorized_consistency']
 
@@ -1000,6 +1011,100 @@ def test_step9_runner_with_tiny_teacher_config():
         assert 'teacher loss' in report_text
 
 
+def test_step10_runner_with_tiny_config():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, 'walkthrough-lattice-step10.md')
+        step3_anchor_path = os.path.join(tmpdir, 'step3_anchors.json')
+        step4_anchor_path = os.path.join(tmpdir, 'step4_anchors.json')
+        step6_anchor_path = os.path.join(tmpdir, 'step6_anchors.json')
+        step7_anchor_path = os.path.join(tmpdir, 'step7_anchors.json')
+        step8_anchor_path = os.path.join(tmpdir, 'step8_anchors.json')
+        step9_anchor_path = os.path.join(tmpdir, 'step9_anchors.json')
+
+        step3_anchors = {
+            'lattice_standard_norm_inv': {
+                'reconstruction': {'mse': 1e-7},
+                'j_correlation': {'max_abs_logabsj_spearman': 0.98},
+                'chart_quality': {
+                    'trustworthiness': 0.85,
+                    'knn_jaccard_mean': 0.05,
+                    'effective_dimension': 1.0,
+                },
+            },
+        }
+        factorized_anchor = {
+            'reconstruction': {'mse': 4e-5},
+            'j_correlation': {'max_abs_logabsj_spearman': 0.90},
+            'chart_quality': {
+                'trustworthiness': 0.85,
+                'knn_jaccard_mean': 0.058,
+                'effective_dimension': 1.6,
+            },
+            'factorized_consistency': {
+                'quotient_partner_rank_percentile_mean': 0.18,
+                'quotient_contrastive_local_loss': 1.0,
+                'decoder_equivariance_mse': 4e-4,
+            },
+        }
+        for path, payload in (
+            (step3_anchor_path, step3_anchors),
+            (step4_anchor_path, {'lattice_factorized_vae_fd_b030_q100_g030_d030': factorized_anchor}),
+            (step6_anchor_path, {'lattice_factorized_vae_fd_b030_q100_g030_d030_l020_s030': factorized_anchor}),
+            (step7_anchor_path, {'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010': factorized_anchor}),
+            (step8_anchor_path, {'lattice_factorized_vae_fd_b030_q100_g030_d030_j010_ld010_r100': factorized_anchor}),
+            (step9_anchor_path, {'lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010': factorized_anchor}),
+        ):
+            with open(path, 'w') as f:
+                json.dump(payload, f, indent=2)
+
+        def tiny_step10_factory():
+            config = _tiny_lattice_config(
+                latent_type='factorized_vae',
+                latent_dim=6,
+                modular_invariance_weight=0.1,
+            )
+            config.model.vae_beta = 0.03
+            config.train.chart_preserving_weight = 0.0
+            config.train.quotient_spread_weight = 0.0
+            config.train.quotient_variance_floor_weight = 0.0
+            config.train.jacobian_gram_weight = 0.0
+            config.train.teacher_distill_weight = 0.0
+            config.train.contrastive_local_weight = 0.01
+            config.train.contrastive_n_neighbors = 4
+            config.train.contrastive_temperature = 0.10
+            config.train.quotient_logdet_weight = 0.0
+            config.train.j_rank_preserving_weight = 0.03
+            config.train.j_rank_n_terms = 10
+            return config
+
+        summaries = run_step10_all(
+            base_dir=tmpdir,
+            experiments=[('lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld000', tiny_step10_factory)],
+            summary_filename='tiny_step10_summaries.json',
+            report_path=report_path,
+            step3_anchor_summary_path=step3_anchor_path,
+            step4_anchor_summary_path=step4_anchor_path,
+            step6_anchor_summary_path=step6_anchor_path,
+            step7_anchor_summary_path=step7_anchor_path,
+            step8_anchor_summary_path=step8_anchor_path,
+            step9_anchor_summary_path=step9_anchor_path,
+        )
+
+        assert 'lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld000' in summaries
+        summary = summaries['lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld000']
+        assert 'factorized_consistency' in summary
+        assert 'quotient_contrastive_local_loss' in summary['factorized_consistency']
+
+        with open(os.path.join(tmpdir, 'tiny_step10_summaries.json')) as f:
+            saved = json.load(f)
+        assert 'lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld000' in saved
+        assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report_text = f.read()
+        assert 'Step 10 Runs' in report_text
+        assert 'contrastive loss' in report_text
+
+
 def test_topology_runner_requires_tda_dependencies():
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=False):
@@ -1208,13 +1313,77 @@ def test_topology_phaseb_runner_with_saved_phasea_outputs():
 
         with open(phaseb_report) as f:
             phaseb_text = f.read()
-        assert 'Primary branch' in phaseb_text
+        assert 'Global primary branch' in phaseb_text
         assert 'PH Trajectory Comparison' in phaseb_text
 
         with open(roadmap_path) as f:
             roadmap_text = f.read()
         assert 'Current recommendation' in roadmap_text
         assert 'Active Branches' in roadmap_text
+
+
+def test_topology_phaseb_can_separate_global_and_focus_decisions():
+    def make_stable_summary(rank=0.10, overlap=0.07, eff=1.8, spearman=0.90):
+        return {
+            'topology_diagnostics': {
+                'dims': {
+                    '4': {
+                        'trustworthiness': 0.86,
+                        'knn_jaccard_mean': 0.08,
+                        'max_abs_logabsj_spearman': spearman,
+                        'partner_rank_percentile_mean': rank,
+                        'partner_knn_hit_rate': 0.4,
+                        'h1_total_persistence': 7.0,
+                    },
+                    '3': {
+                        'trustworthiness': 0.86,
+                        'knn_jaccard_mean': 0.075,
+                        'max_abs_logabsj_spearman': spearman,
+                        'partner_rank_percentile_mean': rank,
+                        'partner_knn_hit_rate': 0.38,
+                        'h1_total_persistence': 6.8,
+                    },
+                    '2': {
+                        'trustworthiness': 0.855,
+                        'knn_jaccard_mean': overlap,
+                        'effective_dimension': eff,
+                        'max_abs_logabsj_spearman': spearman,
+                        'partner_rank_percentile_mean': rank,
+                        'partner_knn_hit_rate': 0.36,
+                        'h1_total_persistence': 6.0,
+                        'diagram_distance_to_prev': {'h1_bottleneck': 0.05},
+                    },
+                    '1': {
+                        'trustworthiness': 0.78,
+                        'knn_jaccard_mean': 0.03,
+                        'effective_dimension': 1.0,
+                        'max_abs_logabsj_spearman': 0.30,
+                        'partner_rank_percentile_mean': rank + 0.2,
+                        'partner_knn_hit_rate': 0.1,
+                        'h1_total_persistence': 0.2,
+                        'diagram_distance_to_prev': {'h1_bottleneck': 0.2},
+                    },
+                },
+            },
+        }
+
+    topology_runs = {
+        'lattice_vae_norm_inv_b010_l100': make_stable_summary(),
+        'lattice_vae_norm_inv_b030_l100': make_stable_summary(),
+        'focus_factorized_run': make_stable_summary(
+            rank=0.12,
+            overlap=0.052,
+            eff=1.7,
+            spearman=0.70,
+        ),
+    }
+
+    global_decision = choose_next_branch(topology_runs, {'branch': 'A'})
+    focus_decision = choose_focus_branch(topology_runs, 'focus_factorized_run')
+
+    assert global_decision['primary_branch'] == 'A1'
+    assert focus_decision['primary_branch'] == 'A2 continues'
+    assert focus_decision['accepted'] is False
 
 
 def test_topology_runner_factorized_uses_quotient_view():
@@ -1369,6 +1538,7 @@ def test_topology_step7_followup_runner():
         assert phasea_experiments[0]['config_overrides']['eval']['ph_max_samples'] == 1500
         assert phasea_experiments[0]['config_overrides']['eval']['ph_random_projection_trials'] == 4
         assert mock_phaseb.call_args.kwargs['experiments'][-1]['name'] == combined['winner_name']
+        assert mock_phaseb.call_args.kwargs['focus_run_name'] == combined['winner_name']
         assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics_step7', 'step7_followup_summary.json'))
 
 
@@ -1418,6 +1588,7 @@ def test_topology_step8_followup_runner():
         assert phasea_experiments[0]['config_overrides']['eval']['ph_max_samples'] == 1500
         assert phasea_experiments[0]['config_overrides']['eval']['ph_random_projection_trials'] == 4
         assert mock_phaseb.call_args.kwargs['experiments'][-1]['name'] == combined['winner_name']
+        assert mock_phaseb.call_args.kwargs['focus_run_name'] == combined['winner_name']
         assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics_step8', 'step8_followup_summary.json'))
 
 
@@ -1468,4 +1639,59 @@ def test_topology_step9_followup_runner():
         assert phasea_experiments[0]['config_overrides']['eval']['ph_max_samples'] == 1500
         assert phasea_experiments[0]['config_overrides']['eval']['ph_random_projection_trials'] == 4
         assert mock_phaseb.call_args.kwargs['experiments'][-1]['name'] == combined['winner_name']
+        assert mock_phaseb.call_args.kwargs['focus_run_name'] == combined['winner_name']
         assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics_step9', 'step9_followup_summary.json'))
+
+
+def test_topology_step10_followup_runner():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        summary_path = os.path.join(tmpdir, 'lattice_step10_summaries.json')
+        with open(summary_path, 'w') as f:
+            json.dump({
+                'lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld010': {
+                    'chart_quality': {
+                        'effective_dimension': 1.8,
+                        'knn_jaccard_mean': 0.06,
+                        'trustworthiness': 0.85,
+                    },
+                    'j_correlation': {'max_abs_logabsj_spearman': 0.91},
+                    'modular_invariance': {'mean_latent_distance': 0.01},
+                    'reconstruction': {'mse': 4e-5},
+                    'factorized_consistency': {
+                        'quotient_partner_rank_percentile_mean': 0.12,
+                        'quotient_contrastive_local_loss': 1.2,
+                        'decoder_equivariance_mse': 4e-4,
+                    },
+                },
+            }, f, indent=2)
+
+        phasea_payload = {'branch_assessment': {'branch': 'A'}}
+        phaseb_payload = {
+            'phaseB_decision': {'primary_branch': 'A1'},
+            'focus_decision': {'primary_branch': 'A2 continues'},
+        }
+
+        with patch('run_topology_step10_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
+            with patch('run_topology_step10_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
+                combined = run_topology_step10_followup_all(
+                    base_dir=tmpdir,
+                    step10_summary_path=summary_path,
+                    diagnostics_dir=os.path.join(tmpdir, 'topology_diagnostics_step10'),
+                    phasea_report_path=os.path.join(tmpdir, 'walkthrough-topology-step10-phaseA.md'),
+                    phaseb_report_path=os.path.join(tmpdir, 'walkthrough-topology-step10-phaseB.md'),
+                    roadmap_path=os.path.join(tmpdir, 'ae-latent-study-roadmap-step10.md'),
+                )
+
+        assert combined['winner_name'] == 'lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld010'
+        assert combined['winner_used_gate'] is True
+        phasea_experiments = mock_phasea.call_args.kwargs['experiments']
+        assert phasea_experiments[-1]['name'] == combined['winner_name']
+        assert any(
+            exp['name'] == 'lattice_factorized_vae_fd_b030_q100_g030_d030_td030_r030_ld010'
+            for exp in phasea_experiments
+        )
+        assert phasea_experiments[0]['config_overrides']['eval']['ph_max_samples'] == 1500
+        assert phasea_experiments[0]['config_overrides']['eval']['ph_random_projection_trials'] == 4
+        assert mock_phaseb.call_args.kwargs['experiments'][-1]['name'] == combined['winner_name']
+        assert mock_phaseb.call_args.kwargs['focus_run_name'] == combined['winner_name']
+        assert os.path.exists(os.path.join(tmpdir, 'topology_diagnostics_step10', 'step10_followup_summary.json'))
