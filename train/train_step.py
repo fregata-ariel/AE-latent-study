@@ -232,6 +232,29 @@ def _quotient_j_rank_loss(
     return loss, target_std
 
 
+def _quotient_teacher_distill_loss(
+    quotient_mean: jnp.ndarray,
+    teacher_quotient_mean: jnp.ndarray,
+    n_neighbors: int,
+) -> jnp.ndarray:
+    """Match local teacher quotient distances without fixing quotient coordinates."""
+    n_points = quotient_mean.shape[0]
+    if n_points <= 1:
+        return jnp.asarray(0.0, dtype=quotient_mean.dtype)
+
+    teacher_q = jax.lax.stop_gradient(
+        teacher_quotient_mean.astype(quotient_mean.dtype),
+    )
+    knn_idx, _ = _tau_knn_indices(teacher_q, n_neighbors)
+    teacher_dists = _pairwise_l2(teacher_q)
+    quotient_dists = _pairwise_l2(quotient_mean)
+
+    teacher_knn = jnp.take_along_axis(teacher_dists, knn_idx, axis=1)
+    quotient_knn = jnp.take_along_axis(quotient_dists, knn_idx, axis=1)
+    scale = jnp.maximum(jnp.mean(teacher_knn, axis=1, keepdims=True), 1e-6)
+    return jnp.mean(((quotient_knn / scale) - (teacher_knn / scale)) ** 2)
+
+
 @jax.jit
 def train_step_ae(
     state: TrainState,
@@ -373,6 +396,8 @@ def _make_train_step_factorized_lattice_vae(
     j_rank_preserving_weight: float = 0.0,
     j_rank_temperature: float = 0.10,
     j_rank_min_delta: float = 0.10,
+    teacher_distill_weight: float = 0.0,
+    teacher_distill_n_neighbors: int = 8,
 ):
     """Create a JIT-compiled factorized lattice VAE training step."""
 
@@ -384,6 +409,7 @@ def _make_train_step_factorized_lattice_vae(
         transform_ids: jnp.ndarray,
         tau_fd_coords: jnp.ndarray,
         j_rank_targets: jnp.ndarray,
+        teacher_quotient: jnp.ndarray,
     ) -> tuple[VAETrainState, dict[str, jnp.ndarray]]:
         rng, step_rng = jax.random.split(state.rng)
 
@@ -458,6 +484,14 @@ def _make_train_step_factorized_lattice_vae(
             else:
                 quotient_j_rank = jnp.asarray(0.0, dtype=q_mean.dtype)
                 quotient_j_rank_target_std = jnp.asarray(0.0, dtype=q_mean.dtype)
+            if teacher_distill_weight > 0.0:
+                quotient_teacher_distill = _quotient_teacher_distill_loss(
+                    q_mean,
+                    teacher_quotient,
+                    teacher_distill_n_neighbors,
+                )
+            else:
+                quotient_teacher_distill = jnp.asarray(0.0, dtype=q_mean.dtype)
             loss = (
                 mse
                 + beta * kl
@@ -471,6 +505,7 @@ def _make_train_step_factorized_lattice_vae(
                 + jacobian_gram_weight * quotient_jacobian_gram
                 + quotient_logdet_weight * quotient_logdet
                 + j_rank_preserving_weight * quotient_j_rank
+                + teacher_distill_weight * quotient_teacher_distill
             )
             return loss, {
                 'loss': loss,
@@ -487,6 +522,7 @@ def _make_train_step_factorized_lattice_vae(
                 'quotient_logdet_loss': quotient_logdet,
                 'quotient_j_rank_loss': quotient_j_rank,
                 'quotient_j_rank_target_std': quotient_j_rank_target_std,
+                'quotient_teacher_distill_loss': quotient_teacher_distill,
             }
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -562,6 +598,8 @@ def _make_eval_step_factorized_lattice_vae(
     j_rank_preserving_weight: float = 0.0,
     j_rank_temperature: float = 0.10,
     j_rank_min_delta: float = 0.10,
+    teacher_distill_weight: float = 0.0,
+    teacher_distill_n_neighbors: int = 8,
 ):
     """Create a JIT-compiled factorized lattice VAE eval step."""
 
@@ -573,6 +611,7 @@ def _make_eval_step_factorized_lattice_vae(
         transform_ids: jnp.ndarray,
         tau_fd_coords: jnp.ndarray,
         j_rank_targets: jnp.ndarray,
+        teacher_quotient: jnp.ndarray,
     ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
         x_hat, z, q_mean, q_logvar, g_mean, g_logvar = state.apply_fn(
             {'params': state.params}, batch, state.rng, deterministic=True,
@@ -644,6 +683,14 @@ def _make_eval_step_factorized_lattice_vae(
         else:
             quotient_j_rank = jnp.asarray(0.0, dtype=q_mean.dtype)
             quotient_j_rank_target_std = jnp.asarray(0.0, dtype=q_mean.dtype)
+        if teacher_distill_weight > 0.0:
+            quotient_teacher_distill = _quotient_teacher_distill_loss(
+                q_mean,
+                teacher_quotient,
+                teacher_distill_n_neighbors,
+            )
+        else:
+            quotient_teacher_distill = jnp.asarray(0.0, dtype=q_mean.dtype)
         loss = (
             mse
             + beta * kl
@@ -657,6 +704,7 @@ def _make_eval_step_factorized_lattice_vae(
             + jacobian_gram_weight * quotient_jacobian_gram
             + quotient_logdet_weight * quotient_logdet
             + j_rank_preserving_weight * quotient_j_rank
+            + teacher_distill_weight * quotient_teacher_distill
         )
         return {
             'loss': loss,
@@ -673,6 +721,7 @@ def _make_eval_step_factorized_lattice_vae(
             'quotient_logdet_loss': quotient_logdet,
             'quotient_j_rank_loss': quotient_j_rank,
             'quotient_j_rank_target_std': quotient_j_rank_target_std,
+            'quotient_teacher_distill_loss': quotient_teacher_distill,
         }, z
 
     return eval_step_factorized_lattice_vae

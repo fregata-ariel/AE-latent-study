@@ -12,6 +12,7 @@ from train.train_step import (
     _quotient_jacobian_gram_loss,
     _quotient_j_rank_loss,
     _quotient_logdet_loss,
+    _quotient_teacher_distill_loss,
     _make_train_step_lattice_invariant_vae,
     _quotient_chart_loss,
     _quotient_spread_loss,
@@ -81,6 +82,8 @@ def _tiny_factorized_lattice_config():
     config.train.j_rank_temperature = 0.10
     config.train.j_rank_min_delta = 0.10
     config.train.j_rank_n_terms = 20
+    config.train.teacher_distill_weight = 0.03
+    config.train.teacher_distill_n_neighbors = 4
     return config
 
 
@@ -351,6 +354,72 @@ def test_quotient_j_rank_loss_ignores_ties_and_constant_targets():
     np.testing.assert_allclose(np.array(target_std), 0.0, atol=1e-7)
 
 
+def test_quotient_teacher_distill_loss_matches_teacher_and_is_rigid_invariant():
+    teacher = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.4, 0.6],
+    ], dtype=jnp.float32)
+    theta = np.pi / 5.0
+    rotation = jnp.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)],
+    ], dtype=jnp.float32)
+    shifted_teacher = teacher @ rotation.T + jnp.array([2.0, -1.0])
+    shifted_student = teacher @ rotation.T + jnp.array([2.0, -1.0])
+
+    loss_same = _quotient_teacher_distill_loss(teacher, teacher, n_neighbors=3)
+    loss_shifted = _quotient_teacher_distill_loss(
+        shifted_student,
+        shifted_teacher,
+        n_neighbors=3,
+    )
+
+    np.testing.assert_allclose(np.array(loss_same), 0.0, atol=2e-6)
+    np.testing.assert_allclose(np.array(loss_shifted), 0.0, atol=2e-6)
+
+
+def test_quotient_teacher_distill_loss_detects_collapse_and_distortion():
+    teacher = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.4, 0.6],
+    ], dtype=jnp.float32)
+    collapsed = jnp.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [3.0, 0.0],
+        [4.0, 0.0],
+    ], dtype=jnp.float32)
+    distorted = jnp.array([
+        [0.0, 0.0],
+        [2.5, 0.0],
+        [0.0, 0.2],
+        [2.5, 0.3],
+        [1.0, 2.0],
+    ], dtype=jnp.float32)
+
+    loss_good = _quotient_teacher_distill_loss(teacher, teacher, n_neighbors=3)
+    loss_collapsed = _quotient_teacher_distill_loss(
+        collapsed,
+        teacher,
+        n_neighbors=3,
+    )
+    loss_distorted = _quotient_teacher_distill_loss(
+        distorted,
+        teacher,
+        n_neighbors=3,
+    )
+
+    assert float(loss_collapsed) > float(loss_good)
+    assert float(loss_distorted) > float(loss_good)
+
+
 def test_train_step_lattice_invariant_vae_reports_all_terms():
     config, state, batch, paired_batch = _make_state_and_batches()
     step_fn = _make_train_step_lattice_invariant_vae(
@@ -439,6 +508,7 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         [0.0, 2.4],
     ], dtype=jnp.float32)
     j_rank_targets = jnp.linspace(-1.0, 1.0, config.train.batch_size)
+    teacher_quotient = tau_fd_coords * 0.5
 
     step_fn = _make_train_step_factorized_lattice_vae(
         model,
@@ -461,9 +531,17 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         config.train.j_rank_preserving_weight,
         config.train.j_rank_temperature,
         config.train.j_rank_min_delta,
+        config.train.teacher_distill_weight,
+        config.train.teacher_distill_n_neighbors,
     )
     next_state, metrics = step_fn(
-        state, batch, paired_batch, transform_ids, tau_fd_coords, j_rank_targets,
+        state,
+        batch,
+        paired_batch,
+        transform_ids,
+        tau_fd_coords,
+        j_rank_targets,
+        teacher_quotient,
     )
 
     assert next_state.rng.shape == state.rng.shape
@@ -482,7 +560,78 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         'quotient_logdet_loss',
         'quotient_j_rank_loss',
         'quotient_j_rank_target_std',
+        'quotient_teacher_distill_loss',
     ):
         assert key in metrics
         assert np.isfinite(float(metrics[key]))
     assert float(metrics['decoder_equivariance']) >= 0.0
+
+
+def test_train_step_factorized_teacher_weight_zero_is_finite_without_signal():
+    config = _tiny_factorized_lattice_config()
+    config.train.teacher_distill_weight = 0.0
+    key = jax.random.PRNGKey(config.seed)
+    model = create_model(config)
+    state = create_train_state(config, model, key)
+
+    batch_key, pair_key = jax.random.split(jax.random.PRNGKey(654))
+    batch = jax.random.normal(
+        batch_key, (config.train.batch_size, config.data.signal_length),
+    )
+    paired_batch = jax.random.normal(
+        pair_key, (config.train.batch_size, config.data.signal_length),
+    )
+    transform_ids = jnp.array([0, 1, 2, 0, 1, 2, 0, 1], dtype=jnp.int32)
+    tau_fd_coords = jnp.array([
+        [-0.4, 1.1],
+        [-0.2, 1.2],
+        [0.1, 1.4],
+        [0.3, 1.6],
+        [-0.1, 1.8],
+        [0.2, 2.0],
+        [-0.3, 2.2],
+        [0.0, 2.4],
+    ], dtype=jnp.float32)
+    j_rank_targets = jnp.linspace(-1.0, 1.0, config.train.batch_size)
+    teacher_quotient = jnp.zeros_like(tau_fd_coords)
+
+    step_fn = _make_train_step_factorized_lattice_vae(
+        model,
+        config.model.vae_beta,
+        config.train.modular_invariance_weight,
+        config.train.gauge_equivariance_weight,
+        config.train.decoder_equivariance_weight,
+        config.train.gauge_action_reg_weight,
+        config.train.chart_preserving_weight,
+        config.train.chart_preserving_n_neighbors,
+        config.train.quotient_variance_floor_weight,
+        config.train.quotient_variance_floor_target,
+        config.train.quotient_spread_weight,
+        config.train.quotient_min_eig_ratio_target,
+        config.train.quotient_trace_cap_ratio,
+        config.train.jacobian_gram_weight,
+        config.train.jacobian_n_neighbors,
+        config.train.quotient_logdet_weight,
+        config.train.quotient_logdet_ratio_target,
+        config.train.j_rank_preserving_weight,
+        config.train.j_rank_temperature,
+        config.train.j_rank_min_delta,
+        config.train.teacher_distill_weight,
+        config.train.teacher_distill_n_neighbors,
+    )
+    _, metrics = step_fn(
+        state,
+        batch,
+        paired_batch,
+        transform_ids,
+        tau_fd_coords,
+        j_rank_targets,
+        teacher_quotient,
+    )
+
+    assert np.isfinite(float(metrics['loss']))
+    np.testing.assert_allclose(
+        np.array(metrics['quotient_teacher_distill_loss']),
+        0.0,
+        atol=1e-7,
+    )

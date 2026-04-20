@@ -26,7 +26,7 @@ from train.train_step import (
     _make_train_step_lattice_invariant_vae, _make_eval_step_lattice_invariant_vae,
     _make_train_step_factorized_lattice_vae, _make_eval_step_factorized_lattice_vae,
 )
-from train.checkpointing import create_checkpoint_manager, save_checkpoint
+from train.checkpointing import create_checkpoint_manager, save_checkpoint, restore_checkpoint
 
 
 def _average_metrics(
@@ -49,6 +49,7 @@ def _evaluate(
     key: jax.Array,
     latent_type: str,
     config: ml_collections.ConfigDict | None = None,
+    teacher_state: TrainState | None = None,
 ) -> dict[str, float]:
     """Run evaluation on a full dataset."""
     metrics_list = []
@@ -79,6 +80,8 @@ def _evaluate(
             getattr(config.train, 'j_rank_preserving_weight', 0.0),
             getattr(config.train, 'j_rank_temperature', 0.10),
             getattr(config.train, 'j_rank_min_delta', 0.10),
+            getattr(config.train, 'teacher_distill_weight', 0.0),
+            getattr(config.train, 'teacher_distill_n_neighbors', 8),
         )
     elif use_invariance and is_vae:
         eval_fn = _make_eval_step_lattice_invariant_vae(
@@ -98,6 +101,11 @@ def _evaluate(
             if is_factorized:
                 tau_fd_coords = _reduce_tau_batch_to_fd_coords(batch_thetas)
                 j_rank_targets = _make_j_rank_targets(batch_thetas, config)
+                teacher_quotient = _make_teacher_quotient_batch(
+                    batch_signals,
+                    teacher_state,
+                    config,
+                )
                 metrics, _ = eval_fn(
                     state,
                     batch_signals,
@@ -105,6 +113,7 @@ def _evaluate(
                     transform_ids,
                     tau_fd_coords,
                     j_rank_targets,
+                    teacher_quotient,
                 )
             else:
                 metrics, _ = eval_fn(state, batch_signals, paired_batch)
@@ -204,6 +213,93 @@ def _make_j_rank_targets(
     return jnp.asarray(targets, dtype=jnp.float32)
 
 
+def _teacher_distillation_enabled(config: ml_collections.ConfigDict | None) -> bool:
+    """Whether the current factorized run should use a restored teacher."""
+    if config is None:
+        return False
+    return (
+        getattr(config.model, 'latent_type', '') == 'factorized_vae'
+        and getattr(config.train, 'teacher_distill_weight', 0.0) > 0.0
+        and bool(getattr(config.train, 'teacher_run_dir', ''))
+    )
+
+
+def _best_checkpoint_step(workdir: str, history: dict, checkpoint_dir: str) -> int:
+    """Pick the validation-best checkpoint step, falling back to latest available."""
+    best_step = int(np.argmin(history['val_loss']))
+    checkpoint_path = os.path.join(workdir, checkpoint_dir)
+    checkpoint_files = sorted(
+        [
+            fname for fname in os.listdir(checkpoint_path)
+            if fname.endswith('.msgpack')
+        ],
+        key=lambda name: int(name.split('.')[0]),
+    )
+    available_steps = [int(name.split('.')[0]) for name in checkpoint_files]
+    if best_step in available_steps:
+        return best_step
+    if not available_steps:
+        raise FileNotFoundError(f'No checkpoints found in {checkpoint_path}')
+    return available_steps[-1]
+
+
+def _load_config_from_json(config_path: str) -> ml_collections.ConfigDict:
+    """Load a saved experiment config as ConfigDict."""
+    with open(config_path) as f:
+        return ml_collections.ConfigDict(json.load(f))
+
+
+def _load_teacher_state(
+    teacher_run_dir: str,
+) -> tuple[TrainState, ml_collections.ConfigDict]:
+    """Restore a fixed factorized teacher from a saved run directory."""
+    config_path = os.path.join(teacher_run_dir, 'config.json')
+    history_path = os.path.join(teacher_run_dir, 'history.json')
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f'Missing teacher config: {config_path}')
+    if not os.path.exists(history_path):
+        raise FileNotFoundError(f'Missing teacher history: {history_path}')
+
+    teacher_config = _load_config_from_json(config_path)
+    if teacher_config.model.latent_type != 'factorized_vae':
+        raise ValueError('teacher_run_dir must point to a factorized_vae run.')
+
+    with open(history_path) as f:
+        history = json.load(f)
+    teacher_model = create_model(teacher_config)
+    state_template = create_train_state(
+        teacher_config,
+        teacher_model,
+        jax.random.PRNGKey(teacher_config.seed),
+    )
+    checkpoint_manager = create_checkpoint_manager(teacher_config, teacher_run_dir)
+    step = _best_checkpoint_step(
+        teacher_run_dir,
+        history,
+        teacher_config.checkpoint.dir,
+    )
+    return restore_checkpoint(checkpoint_manager, step, state_template), teacher_config
+
+
+def _make_teacher_quotient_batch(
+    batch_signals: jnp.ndarray,
+    teacher_state: TrainState | None,
+    config: ml_collections.ConfigDict,
+) -> jnp.ndarray:
+    """Encode a batch with the fixed teacher or return zeros when disabled."""
+    quotient_dim = int(getattr(config.model, 'quotient_dim', 2))
+    if not _teacher_distillation_enabled(config) or teacher_state is None:
+        return jnp.zeros((batch_signals.shape[0], quotient_dim), dtype=batch_signals.dtype)
+
+    _, _, q_mean, _, _, _ = teacher_state.apply_fn(
+        {'params': teacher_state.params},
+        batch_signals,
+        teacher_state.rng,
+        deterministic=True,
+    )
+    return jax.lax.stop_gradient(q_mean)
+
+
 def train_and_evaluate(
     config: ml_collections.ConfigDict,
     workdir: str,
@@ -241,6 +337,11 @@ def train_and_evaluate(
 
     # Checkpointing
     ckpt_mngr = create_checkpoint_manager(config, workdir)
+    teacher_state = None
+    if _teacher_distillation_enabled(config):
+        teacher_run_dir = os.path.abspath(config.train.teacher_run_dir)
+        teacher_state, _ = _load_teacher_state(teacher_run_dir)
+        print(f"Teacher: {teacher_run_dir}")
 
     # Training setup
     latent_type = config.model.latent_type
@@ -287,6 +388,8 @@ def train_and_evaluate(
             getattr(config.train, 'j_rank_preserving_weight', 0.0),
             getattr(config.train, 'j_rank_temperature', 0.10),
             getattr(config.train, 'j_rank_min_delta', 0.10),
+            getattr(config.train, 'teacher_distill_weight', 0.0),
+            getattr(config.train, 'teacher_distill_n_neighbors', 8),
         )
     elif is_vae and use_invariance:
         train_step_fn = _make_train_step_lattice_invariant_vae(
@@ -322,6 +425,7 @@ def train_and_evaluate(
         history['train_quotient_jacobian_gram_loss'] = []
         history['train_quotient_logdet_loss'] = []
         history['train_quotient_j_rank_loss'] = []
+        history['train_quotient_teacher_distill_loss'] = []
 
     best_val_loss = float('inf')
     best_epoch = -1
@@ -344,6 +448,11 @@ def train_and_evaluate(
                 if is_factorized:
                     tau_fd_coords = _reduce_tau_batch_to_fd_coords(batch_thetas)
                     j_rank_targets = _make_j_rank_targets(batch_thetas, config)
+                    teacher_quotient = _make_teacher_quotient_batch(
+                        batch_signals,
+                        teacher_state,
+                        config,
+                    )
                     state, metrics = train_step_fn(
                         state,
                         batch_signals,
@@ -351,6 +460,7 @@ def train_and_evaluate(
                         transform_ids,
                         tau_fd_coords,
                         j_rank_targets,
+                        teacher_quotient,
                     )
                 else:
                     state, metrics = train_step_fn(state, batch_signals, paired_batch)
@@ -363,7 +473,13 @@ def train_and_evaluate(
         # Validate
         key, val_key = jax.random.split(key)
         val_metrics = _evaluate(
-            state, val_ds, batch_size, val_key, latent_type, config=config,
+            state,
+            val_ds,
+            batch_size,
+            val_key,
+            latent_type,
+            config=config,
+            teacher_state=teacher_state,
         )
 
         # Record history
@@ -405,6 +521,9 @@ def train_and_evaluate(
             )
             history['train_quotient_j_rank_loss'].append(
                 train_metrics.get('quotient_j_rank_loss', 0.0),
+            )
+            history['train_quotient_teacher_distill_loss'].append(
+                train_metrics.get('quotient_teacher_distill_loss', 0.0),
             )
 
         # Logging

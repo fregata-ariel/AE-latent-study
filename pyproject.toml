@@ -31,3 +31,8 @@ cuda = [
 
 [tool.setuptools.packages.find]
 include = ["configs*", "data*", "models*", "train*", "eval*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

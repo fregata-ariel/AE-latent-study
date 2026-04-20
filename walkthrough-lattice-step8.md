@@ -42,3 +42,10 @@
 
 - If the selected run restores `log10|j|` Spearman while keeping Step 7 chart spread, Step 7 failure was likely semantic erosion rather than the whole Jacobian-like family failing.
 - If no run passes the gate, treat this as evidence that small Step 7 variants are insufficient and keep A2 active toward teacher distillation or contrastive local geometry.
+
+## Final Reading
+
+- Step 8 is a partial rescue: the runner gate passed, and raw quotient `log10|j|` retention improved strongly.
+- It is not an accepted successor model yet. The selected run still misses the stricter balanced acceptance checks because overlap, modular distance, and reconstruction MSE remain outside the target range.
+- The topology follow-up also shows that the raw quotient `j` recovery does not fully survive the PCA / PH projection ladder.
+- Current research state: keep `A2` active and move next to Step 9 teacher quotient-structure distillation, using the Step 7 winner as the fixed teacher.

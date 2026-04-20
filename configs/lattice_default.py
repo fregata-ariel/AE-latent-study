@@ -65,6 +65,11 @@ def get_config() -> ml_collections.ConfigDict:
     config.train.j_rank_temperature = 0.10
     config.train.j_rank_min_delta = 0.10
     config.train.j_rank_n_terms = 50
+    config.train.teacher_distill_weight = 0.0
+    config.train.teacher_run_dir = ''
+    config.train.teacher_distill_n_neighbors = 8
+    config.train.teacher_distill_view = 'quotient'
+    config.train.teacher_distill_loss_type = 'local_distance'
 
     # --- Checkpoint ---
     config.checkpoint = ml_collections.ConfigDict()

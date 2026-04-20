@@ -1,7 +1,11 @@
 """Evaluation metrics for reconstruction quality and periodicity."""
 
+import json
+import os
+
 import jax
 import jax.numpy as jnp
+import ml_collections
 import numpy as np
 from flax.training.train_state import TrainState
 from sklearn.decomposition import PCA
@@ -12,6 +16,8 @@ from sklearn.neighbors import NearestNeighbors
 from data.dataset import Dataset, batched_iterator
 from data.generation import modular_transform_ids
 from models import create_model
+from train.checkpointing import create_checkpoint_manager, restore_checkpoint
+from train.train_state import create_train_state
 
 
 def _resolve_latent_type(
@@ -591,6 +597,81 @@ def _compute_quotient_j_rank_metrics(
     return float(np.sum(pair_losses[valid_pairs]) / valid_count), target_std
 
 
+def _compute_quotient_teacher_distill_metrics(
+    quotient_coords: np.ndarray,
+    teacher_quotient_coords: np.ndarray,
+    n_neighbors: int,
+) -> tuple[float, float, np.ndarray]:
+    """Return teacher local-distance loss and pairwise distance correlation."""
+    quotient = np.asarray(quotient_coords, dtype=float)
+    teacher = np.asarray(teacher_quotient_coords, dtype=float)
+    n_samples = min(quotient.shape[0], teacher.shape[0])
+    if n_samples <= 1:
+        return 0.0, 0.0, np.zeros(0, dtype=float)
+
+    quotient = quotient[:n_samples]
+    teacher = teacher[:n_samples]
+    k_use = min(max(1, int(n_neighbors)), max(1, n_samples - 1))
+    teacher_dists = np.linalg.norm(teacher[:, None, :] - teacher[None, :, :], axis=-1)
+    quotient_dists = np.linalg.norm(
+        quotient[:, None, :] - quotient[None, :, :], axis=-1,
+    )
+    teacher_for_knn = teacher_dists.copy()
+    np.fill_diagonal(teacher_for_knn, np.inf)
+    knn_idx = np.argsort(teacher_for_knn, axis=1)[:, :k_use]
+
+    teacher_knn = np.take_along_axis(teacher_dists, knn_idx, axis=1)
+    quotient_knn = np.take_along_axis(quotient_dists, knn_idx, axis=1)
+    scale = np.maximum(np.mean(teacher_knn, axis=1, keepdims=True), 1e-6)
+    loss = float(np.mean(((quotient_knn / scale) - (teacher_knn / scale)) ** 2))
+
+    upper = np.triu_indices(n_samples, k=1)
+    corr = _pearson_correlation(quotient_dists[upper], teacher_dists[upper])
+    return loss, corr, np.var(teacher, axis=0)
+
+
+def _best_checkpoint_step(workdir: str, history: dict, checkpoint_dir: str) -> int:
+    """Pick the validation-best checkpoint step, falling back to latest available."""
+    best_step = int(np.argmin(history['val_loss']))
+    checkpoint_path = os.path.join(workdir, checkpoint_dir)
+    checkpoint_files = sorted(
+        [
+            fname for fname in os.listdir(checkpoint_path)
+            if fname.endswith('.msgpack')
+        ],
+        key=lambda name: int(name.split('.')[0]),
+    )
+    available_steps = [int(name.split('.')[0]) for name in checkpoint_files]
+    if best_step in available_steps:
+        return best_step
+    if not available_steps:
+        raise FileNotFoundError(f'No checkpoints found in {checkpoint_path}')
+    return available_steps[-1]
+
+
+def _load_teacher_state_for_metrics(
+    teacher_run_dir: str,
+) -> tuple[TrainState, ml_collections.ConfigDict]:
+    """Restore a factorized teacher for post-hoc consistency metrics."""
+    with open(os.path.join(teacher_run_dir, 'config.json')) as f:
+        teacher_config = ml_collections.ConfigDict(json.load(f))
+    with open(os.path.join(teacher_run_dir, 'history.json')) as f:
+        history = json.load(f)
+    teacher_model = create_model(teacher_config)
+    state_template = create_train_state(
+        teacher_config,
+        teacher_model,
+        jax.random.PRNGKey(teacher_config.seed),
+    )
+    checkpoint_manager = create_checkpoint_manager(teacher_config, teacher_run_dir)
+    step = _best_checkpoint_step(
+        teacher_run_dir,
+        history,
+        teacher_config.checkpoint.dir,
+    )
+    return restore_checkpoint(checkpoint_manager, step, state_template), teacher_config
+
+
 def _local_knn_jaccard(
     tau_coords: np.ndarray,
     latent_coords: np.ndarray,
@@ -909,6 +990,29 @@ def compute_factorized_consistency(
         temperature=getattr(config.train, 'j_rank_temperature', 0.10),
         min_delta=getattr(config.train, 'j_rank_min_delta', 0.10),
     )
+    teacher_run_dir = getattr(config.train, 'teacher_run_dir', '')
+    teacher_distill_n_neighbors = getattr(config.train, 'teacher_distill_n_neighbors', 8)
+    quotient_teacher_distill_loss = 0.0
+    student_teacher_pairwise_distance_corr = 0.0
+    teacher_quotient_variances = np.zeros(2, dtype=float)
+    if teacher_run_dir and os.path.exists(os.path.join(teacher_run_dir, 'config.json')):
+        teacher_state, _ = _load_teacher_state_for_metrics(teacher_run_dir)
+        teacher_quotient = np.asarray(encode_dataset(
+            teacher_state,
+            dataset,
+            batch_size=batch_size,
+            latent_type='factorized_vae',
+            latent_view='quotient',
+        ))
+        (
+            quotient_teacher_distill_loss,
+            student_teacher_pairwise_distance_corr,
+            teacher_quotient_variances,
+        ) = _compute_quotient_teacher_distill_metrics(
+            quotient,
+            teacher_quotient,
+            n_neighbors=teacher_distill_n_neighbors,
+        )
 
     return {
         'quotient_pair_distance_mean': float(np.mean(np.linalg.norm(
@@ -933,6 +1037,12 @@ def compute_factorized_consistency(
         'quotient_logdet_loss': quotient_logdet_loss,
         'quotient_j_rank_loss': quotient_j_rank_loss,
         'quotient_j_rank_target_std': quotient_j_rank_target_std,
+        'quotient_teacher_distill_loss': quotient_teacher_distill_loss,
+        'teacher_run_dir': teacher_run_dir,
+        'teacher_distill_n_neighbors': int(teacher_distill_n_neighbors),
+        'teacher_quotient_var_dim0': float(teacher_quotient_variances[0]) if teacher_quotient_variances.size >= 1 else 0.0,
+        'teacher_quotient_var_dim1': float(teacher_quotient_variances[1]) if teacher_quotient_variances.size >= 2 else 0.0,
+        'student_teacher_pairwise_distance_corr': student_teacher_pairwise_distance_corr,
         'quotient_cov_logdet': float(quotient_cov_logdet),
         'tau_cov_logdet': float(tau_cov_logdet),
         'quotient_cov_eig_min': float(quotient_cov_eigs[0]) if quotient_cov_eigs.size >= 1 else 0.0,

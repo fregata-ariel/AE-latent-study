@@ -307,6 +307,9 @@ def _run_lattice_evaluation(
             f"  Quotient j-rank loss: {consistency.get('quotient_j_rank_loss', 0.0):.6f}"
         )
         print(
+            f"  Quotient teacher loss: {consistency.get('quotient_teacher_distill_loss', 0.0):.6f}"
+        )
+        print(
             "  Quotient covariance eigs: "
             f"[{consistency['quotient_cov_eig_min']:.6f}, {consistency['quotient_cov_eig_max']:.6f}]"
         )

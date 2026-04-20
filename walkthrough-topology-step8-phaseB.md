@@ -54,3 +54,10 @@
 - Phase A branch: `A`.
 - Fundamental-domain runs supporting a 2D quotient chart transition: `lattice_vae_norm_inv_b010_l100`, `lattice_vae_norm_inv_b030_l100`.
 - `lattice_vae_wide_norm_inv_b003_l030` at k=2: trust=0.8756, overlap=0.0584, rank=0.5351, H1=6.1422.
+
+## Step 8 Addendum
+
+- The generic Phase B branch rule still reports `A1` because it is anchored on the VAE+invariance representatives.
+- For the Step 8 factorized line specifically, the correct reading is more cautious: pairwise `j` rank retention restores raw quotient `log10|j|` Spearman, but the selected Step 8 run does not preserve that signal robustly through the PCA / PH ladder.
+- Step 8 selected run at k=2 has effective dimension close to 2, but its topology-side `j` retention is weaker than the Step 7 winner and its overlap is lower.
+- Research decision for the factorized branch: `A2` continues. The next experiment should use Step 7 as a teacher and distill quotient local distance structure instead of relying on small Step 7/8 regularizer tweaks.
