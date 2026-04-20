@@ -59,6 +59,10 @@ def get_config() -> ml_collections.ConfigDict:
     config.train.jacobian_n_neighbors = 8
     config.train.quotient_logdet_weight = 0.0
     config.train.quotient_logdet_ratio_target = 0.10
+    config.train.j_rank_preserving_weight = 0.0
+    config.train.j_rank_temperature = 0.10
+    config.train.j_rank_min_delta = 0.10
+    config.train.j_rank_n_terms = 50
 
     # --- Checkpoint ---
     config.checkpoint = ml_collections.ConfigDict()

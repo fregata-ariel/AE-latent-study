@@ -10,6 +10,7 @@ from train.train_state import create_train_state
 from train.train_step import (
     _make_train_step_factorized_lattice_vae,
     _quotient_jacobian_gram_loss,
+    _quotient_j_rank_loss,
     _quotient_logdet_loss,
     _make_train_step_lattice_invariant_vae,
     _quotient_chart_loss,
@@ -76,6 +77,10 @@ def _tiny_factorized_lattice_config():
     config.train.jacobian_n_neighbors = 4
     config.train.quotient_logdet_weight = 0.03
     config.train.quotient_logdet_ratio_target = 0.10
+    config.train.j_rank_preserving_weight = 0.03
+    config.train.j_rank_temperature = 0.10
+    config.train.j_rank_min_delta = 0.10
+    config.train.j_rank_n_terms = 20
     return config
 
 
@@ -295,6 +300,57 @@ def test_quotient_logdet_loss_detects_collapse_and_overexpansion():
     assert float(loss_overexpanded) > float(loss_balanced)
 
 
+def test_quotient_j_rank_loss_prefers_ordered_quotient_scores():
+    targets = jnp.array([-1.5, -0.5, 0.5, 1.5], dtype=jnp.float32)
+    quotient_ordered = jnp.array([
+        [-1.5, 0.0],
+        [-0.5, 0.0],
+        [0.5, 0.0],
+        [1.5, 0.0],
+    ], dtype=jnp.float32)
+    quotient_scrambled = jnp.array([
+        [0.0, 0.0],
+        [1.5, 0.0],
+        [-1.5, 0.0],
+        [0.3, 0.0],
+    ], dtype=jnp.float32)
+
+    ordered_loss, target_std = _quotient_j_rank_loss(
+        quotient_ordered,
+        targets,
+        temperature=0.10,
+        min_delta=0.10,
+    )
+    scrambled_loss, _ = _quotient_j_rank_loss(
+        quotient_scrambled,
+        targets,
+        temperature=0.10,
+        min_delta=0.10,
+    )
+
+    assert float(target_std) > 0.0
+    assert float(ordered_loss) < float(scrambled_loss)
+
+
+def test_quotient_j_rank_loss_ignores_ties_and_constant_targets():
+    quotient = jnp.array([
+        [-1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 0.0],
+    ], dtype=jnp.float32)
+    constant_targets = jnp.ones((3,), dtype=jnp.float32)
+
+    loss, target_std = _quotient_j_rank_loss(
+        quotient,
+        constant_targets,
+        temperature=0.10,
+        min_delta=0.10,
+    )
+
+    np.testing.assert_allclose(np.array(loss), 0.0, atol=1e-7)
+    np.testing.assert_allclose(np.array(target_std), 0.0, atol=1e-7)
+
+
 def test_train_step_lattice_invariant_vae_reports_all_terms():
     config, state, batch, paired_batch = _make_state_and_batches()
     step_fn = _make_train_step_lattice_invariant_vae(
@@ -382,6 +438,7 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         [-0.3, 2.2],
         [0.0, 2.4],
     ], dtype=jnp.float32)
+    j_rank_targets = jnp.linspace(-1.0, 1.0, config.train.batch_size)
 
     step_fn = _make_train_step_factorized_lattice_vae(
         model,
@@ -401,9 +458,12 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         config.train.jacobian_n_neighbors,
         config.train.quotient_logdet_weight,
         config.train.quotient_logdet_ratio_target,
+        config.train.j_rank_preserving_weight,
+        config.train.j_rank_temperature,
+        config.train.j_rank_min_delta,
     )
     next_state, metrics = step_fn(
-        state, batch, paired_batch, transform_ids, tau_fd_coords,
+        state, batch, paired_batch, transform_ids, tau_fd_coords, j_rank_targets,
     )
 
     assert next_state.rng.shape == state.rng.shape
@@ -420,6 +480,8 @@ def test_train_step_factorized_lattice_vae_reports_all_terms():
         'quotient_spread_loss',
         'quotient_jacobian_gram_loss',
         'quotient_logdet_loss',
+        'quotient_j_rank_loss',
+        'quotient_j_rank_target_std',
     ):
         assert key in metrics
         assert np.isfinite(float(metrics[key]))

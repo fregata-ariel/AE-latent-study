@@ -11,6 +11,7 @@ from flax.training.train_state import TrainState
 
 from data.dataset import create_splits, batched_iterator, Dataset
 from data.generation import (
+    compute_j_invariant,
     generate_lattice_theta,
     make_cyclic_modular_partners,
     modular_transform_ids,
@@ -75,6 +76,9 @@ def _evaluate(
             getattr(config.train, 'jacobian_n_neighbors', 8),
             getattr(config.train, 'quotient_logdet_weight', 0.0),
             getattr(config.train, 'quotient_logdet_ratio_target', 0.10),
+            getattr(config.train, 'j_rank_preserving_weight', 0.0),
+            getattr(config.train, 'j_rank_temperature', 0.10),
+            getattr(config.train, 'j_rank_min_delta', 0.10),
         )
     elif use_invariance and is_vae:
         eval_fn = _make_eval_step_lattice_invariant_vae(
@@ -93,8 +97,14 @@ def _evaluate(
             paired_batch, transform_ids = _make_lattice_partner_batch(batch_thetas, config)
             if is_factorized:
                 tau_fd_coords = _reduce_tau_batch_to_fd_coords(batch_thetas)
+                j_rank_targets = _make_j_rank_targets(batch_thetas, config)
                 metrics, _ = eval_fn(
-                    state, batch_signals, paired_batch, transform_ids, tau_fd_coords,
+                    state,
+                    batch_signals,
+                    paired_batch,
+                    transform_ids,
+                    tau_fd_coords,
+                    j_rank_targets,
                 )
             else:
                 metrics, _ = eval_fn(state, batch_signals, paired_batch)
@@ -168,6 +178,30 @@ def _reduce_tau_batch_to_fd_coords(
     tau_fd = reduce_to_fundamental_domain(tau)
     coords = np.stack([tau_fd.real, tau_fd.imag], axis=-1)
     return jnp.asarray(coords)
+
+
+def _make_j_rank_targets(
+    batch_thetas: jnp.ndarray,
+    config: ml_collections.ConfigDict,
+) -> jnp.ndarray:
+    """Compute standardized batch log10|j| targets for pairwise rank retention."""
+    batch_size = batch_thetas.shape[0]
+    if getattr(config.train, 'j_rank_preserving_weight', 0.0) <= 0.0:
+        return jnp.zeros((batch_size,), dtype=jnp.float32)
+
+    tau = np.array(batch_thetas[:, 0]) + 1j * np.array(batch_thetas[:, 1])
+    j_values = compute_j_invariant(
+        tau,
+        n_terms=getattr(config.train, 'j_rank_n_terms', 50),
+    )
+    targets = np.log10(np.maximum(np.abs(j_values), 1e-30))
+    targets = targets - np.mean(targets)
+    target_std = np.std(targets)
+    if target_std > 1e-6:
+        targets = targets / target_std
+    else:
+        targets = np.zeros_like(targets)
+    return jnp.asarray(targets, dtype=jnp.float32)
 
 
 def train_and_evaluate(
@@ -250,6 +284,9 @@ def train_and_evaluate(
             getattr(config.train, 'jacobian_n_neighbors', 8),
             getattr(config.train, 'quotient_logdet_weight', 0.0),
             getattr(config.train, 'quotient_logdet_ratio_target', 0.10),
+            getattr(config.train, 'j_rank_preserving_weight', 0.0),
+            getattr(config.train, 'j_rank_temperature', 0.10),
+            getattr(config.train, 'j_rank_min_delta', 0.10),
         )
     elif is_vae and use_invariance:
         train_step_fn = _make_train_step_lattice_invariant_vae(
@@ -284,6 +321,7 @@ def train_and_evaluate(
         history['train_quotient_spread_loss'] = []
         history['train_quotient_jacobian_gram_loss'] = []
         history['train_quotient_logdet_loss'] = []
+        history['train_quotient_j_rank_loss'] = []
 
     best_val_loss = float('inf')
     best_epoch = -1
@@ -305,8 +343,14 @@ def train_and_evaluate(
                 )
                 if is_factorized:
                     tau_fd_coords = _reduce_tau_batch_to_fd_coords(batch_thetas)
+                    j_rank_targets = _make_j_rank_targets(batch_thetas, config)
                     state, metrics = train_step_fn(
-                        state, batch_signals, paired_batch, transform_ids, tau_fd_coords,
+                        state,
+                        batch_signals,
+                        paired_batch,
+                        transform_ids,
+                        tau_fd_coords,
+                        j_rank_targets,
                     )
                 else:
                     state, metrics = train_step_fn(state, batch_signals, paired_batch)
@@ -358,6 +402,9 @@ def train_and_evaluate(
             )
             history['train_quotient_logdet_loss'].append(
                 train_metrics.get('quotient_logdet_loss', 0.0),
+            )
+            history['train_quotient_j_rank_loss'].append(
+                train_metrics.get('quotient_j_rank_loss', 0.0),
             )
 
         # Logging

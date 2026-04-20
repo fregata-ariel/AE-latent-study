@@ -27,6 +27,15 @@ def _covariance_matrix(points: jnp.ndarray) -> jnp.ndarray:
     return (centered.T @ centered) / denom
 
 
+def _standardize_1d(values: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Standardize a 1D vector and return the pre-clamp standard deviation."""
+    centered = values - jnp.mean(values)
+    variance = jnp.mean(centered ** 2)
+    std = jnp.sqrt(jnp.maximum(variance, 0.0))
+    safe_std = jnp.sqrt(variance + 1e-12)
+    return centered / safe_std, std
+
+
 def _tau_knn_indices(
     tau_fd_coords: jnp.ndarray,
     n_neighbors: int,
@@ -176,6 +185,53 @@ def _quotient_logdet_loss(
     return loss, quotient_logdet, tau_logdet, quotient_eigs, tau_eigs
 
 
+def _quotient_j_rank_loss(
+    quotient_mean: jnp.ndarray,
+    j_rank_targets: jnp.ndarray,
+    temperature: float,
+    min_delta: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Preserve pairwise log|j| rank order along a batch-adaptive quotient axis."""
+    n_points = quotient_mean.shape[0]
+    if n_points <= 1:
+        zero = jnp.asarray(0.0, dtype=quotient_mean.dtype)
+        return zero, zero
+
+    targets = j_rank_targets.reshape((-1,)).astype(quotient_mean.dtype)
+    y, target_std = _standardize_1d(targets)
+    q_centered = quotient_mean - jnp.mean(quotient_mean, axis=0, keepdims=True)
+
+    cov_direction = jnp.mean(q_centered * y[:, None], axis=0)
+    direction_norm = jnp.linalg.norm(cov_direction)
+    direction = jax.lax.stop_gradient(
+        cov_direction / jnp.maximum(direction_norm, 1e-6),
+    )
+    raw_score = q_centered @ direction
+    score, _ = _standardize_1d(raw_score)
+
+    target_diffs = y[:, None] - y[None, :]
+    score_diffs = score[:, None] - score[None, :]
+    valid_pairs = jnp.logical_and(
+        jnp.abs(target_diffs) >= min_delta,
+        ~jnp.eye(n_points, dtype=bool),
+    )
+    signed_margin = jnp.sign(target_diffs) * score_diffs
+    pair_losses = jax.nn.softplus(
+        -signed_margin / jnp.maximum(
+            jnp.asarray(temperature, dtype=quotient_mean.dtype),
+            1e-6,
+        ),
+    )
+    valid_count = jnp.sum(valid_pairs)
+    safe_count = jnp.maximum(valid_count, 1)
+    loss = jnp.where(
+        valid_count > 0,
+        jnp.sum(jnp.where(valid_pairs, pair_losses, 0.0)) / safe_count,
+        jnp.asarray(0.0, dtype=quotient_mean.dtype),
+    )
+    return loss, target_std
+
+
 @jax.jit
 def train_step_ae(
     state: TrainState,
@@ -314,6 +370,9 @@ def _make_train_step_factorized_lattice_vae(
     jacobian_n_neighbors: int = 8,
     quotient_logdet_weight: float = 0.0,
     quotient_logdet_ratio_target: float = 0.10,
+    j_rank_preserving_weight: float = 0.0,
+    j_rank_temperature: float = 0.10,
+    j_rank_min_delta: float = 0.10,
 ):
     """Create a JIT-compiled factorized lattice VAE training step."""
 
@@ -324,6 +383,7 @@ def _make_train_step_factorized_lattice_vae(
         paired_batch: jnp.ndarray,
         transform_ids: jnp.ndarray,
         tau_fd_coords: jnp.ndarray,
+        j_rank_targets: jnp.ndarray,
     ) -> tuple[VAETrainState, dict[str, jnp.ndarray]]:
         rng, step_rng = jax.random.split(state.rng)
 
@@ -388,6 +448,16 @@ def _make_train_step_factorized_lattice_vae(
                 quotient_logdet_ratio_target,
                 quotient_trace_cap_ratio,
             )
+            if j_rank_preserving_weight > 0.0:
+                quotient_j_rank, quotient_j_rank_target_std = _quotient_j_rank_loss(
+                    q_mean,
+                    j_rank_targets,
+                    j_rank_temperature,
+                    j_rank_min_delta,
+                )
+            else:
+                quotient_j_rank = jnp.asarray(0.0, dtype=q_mean.dtype)
+                quotient_j_rank_target_std = jnp.asarray(0.0, dtype=q_mean.dtype)
             loss = (
                 mse
                 + beta * kl
@@ -400,6 +470,7 @@ def _make_train_step_factorized_lattice_vae(
                 + quotient_spread_weight * quotient_spread
                 + jacobian_gram_weight * quotient_jacobian_gram
                 + quotient_logdet_weight * quotient_logdet
+                + j_rank_preserving_weight * quotient_j_rank
             )
             return loss, {
                 'loss': loss,
@@ -414,6 +485,8 @@ def _make_train_step_factorized_lattice_vae(
                 'quotient_spread_loss': quotient_spread,
                 'quotient_jacobian_gram_loss': quotient_jacobian_gram,
                 'quotient_logdet_loss': quotient_logdet,
+                'quotient_j_rank_loss': quotient_j_rank,
+                'quotient_j_rank_target_std': quotient_j_rank_target_std,
             }
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -486,6 +559,9 @@ def _make_eval_step_factorized_lattice_vae(
     jacobian_n_neighbors: int = 8,
     quotient_logdet_weight: float = 0.0,
     quotient_logdet_ratio_target: float = 0.10,
+    j_rank_preserving_weight: float = 0.0,
+    j_rank_temperature: float = 0.10,
+    j_rank_min_delta: float = 0.10,
 ):
     """Create a JIT-compiled factorized lattice VAE eval step."""
 
@@ -496,6 +572,7 @@ def _make_eval_step_factorized_lattice_vae(
         paired_batch: jnp.ndarray,
         transform_ids: jnp.ndarray,
         tau_fd_coords: jnp.ndarray,
+        j_rank_targets: jnp.ndarray,
     ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
         x_hat, z, q_mean, q_logvar, g_mean, g_logvar = state.apply_fn(
             {'params': state.params}, batch, state.rng, deterministic=True,
@@ -557,6 +634,16 @@ def _make_eval_step_factorized_lattice_vae(
             quotient_logdet_ratio_target,
             quotient_trace_cap_ratio,
         )
+        if j_rank_preserving_weight > 0.0:
+            quotient_j_rank, quotient_j_rank_target_std = _quotient_j_rank_loss(
+                q_mean,
+                j_rank_targets,
+                j_rank_temperature,
+                j_rank_min_delta,
+            )
+        else:
+            quotient_j_rank = jnp.asarray(0.0, dtype=q_mean.dtype)
+            quotient_j_rank_target_std = jnp.asarray(0.0, dtype=q_mean.dtype)
         loss = (
             mse
             + beta * kl
@@ -569,6 +656,7 @@ def _make_eval_step_factorized_lattice_vae(
             + quotient_spread_weight * quotient_spread
             + jacobian_gram_weight * quotient_jacobian_gram
             + quotient_logdet_weight * quotient_logdet
+            + j_rank_preserving_weight * quotient_j_rank
         )
         return {
             'loss': loss,
@@ -583,6 +671,8 @@ def _make_eval_step_factorized_lattice_vae(
             'quotient_spread_loss': quotient_spread,
             'quotient_jacobian_gram_loss': quotient_jacobian_gram,
             'quotient_logdet_loss': quotient_logdet,
+            'quotient_j_rank_loss': quotient_j_rank,
+            'quotient_j_rank_target_std': quotient_j_rank_target_std,
         }, z
 
     return eval_step_factorized_lattice_vae

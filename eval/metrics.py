@@ -544,6 +544,53 @@ def _compute_quotient_logdet_metrics(
     return loss, quotient_logdet, tau_logdet, quotient_eigs, tau_eigs, tau_trace
 
 
+def _standardize_array(values: np.ndarray) -> tuple[np.ndarray, float]:
+    """Standardize a 1D numpy array and return the original standard deviation."""
+    vals = np.asarray(values, dtype=float).reshape(-1)
+    centered = vals - float(np.mean(vals))
+    std = float(np.std(centered))
+    if std <= 1e-6:
+        return np.zeros_like(centered), std
+    return centered / std, std
+
+
+def _compute_quotient_j_rank_metrics(
+    quotient_coords: np.ndarray,
+    logabs_j_targets: np.ndarray,
+    temperature: float,
+    min_delta: float,
+) -> tuple[float, float]:
+    """Return pairwise log|j| rank loss along a batch-adaptive quotient axis."""
+    quotient = np.asarray(quotient_coords, dtype=float)
+    if quotient.ndim != 2 or quotient.shape[0] <= 1:
+        return 0.0, 0.0
+
+    y, target_std = _standardize_array(logabs_j_targets)
+    q_centered = quotient - np.mean(quotient, axis=0, keepdims=True)
+    cov_direction = np.mean(q_centered * y[:, None], axis=0)
+    direction_norm = float(np.linalg.norm(cov_direction))
+    if direction_norm <= 1e-6:
+        score = np.zeros(quotient.shape[0], dtype=float)
+    else:
+        direction = cov_direction / direction_norm
+        score, _ = _standardize_array(q_centered @ direction)
+
+    target_diffs = y[:, None] - y[None, :]
+    score_diffs = score[:, None] - score[None, :]
+    valid_pairs = np.logical_and(
+        np.abs(target_diffs) >= min_delta,
+        ~np.eye(quotient.shape[0], dtype=bool),
+    )
+    valid_count = int(np.sum(valid_pairs))
+    if valid_count == 0:
+        return 0.0, target_std
+
+    signed_margin = np.sign(target_diffs) * score_diffs
+    temp = max(float(temperature), 1e-6)
+    pair_losses = np.logaddexp(0.0, -signed_margin / temp)
+    return float(np.sum(pair_losses[valid_pairs]) / valid_count), target_std
+
+
 def _local_knn_jaccard(
     tau_coords: np.ndarray,
     latent_coords: np.ndarray,
@@ -743,6 +790,7 @@ def compute_factorized_consistency(
 ) -> dict[str, float]:
     """Compute quotient/gauge consistency metrics for factorized lattice VAEs."""
     from data.generation import (
+        compute_j_invariant,
         generate_lattice_theta,
         make_cyclic_modular_partners,
         normalize_lattice_signals,
@@ -847,6 +895,20 @@ def compute_factorized_consistency(
         ),
         trace_cap_ratio=getattr(config.train, 'quotient_trace_cap_ratio', 1.50),
     )
+    if dataset.j_invariant is not None:
+        j_values = np.asarray(dataset.j_invariant)
+    else:
+        j_values = compute_j_invariant(
+            tau_values,
+            n_terms=getattr(config.train, 'j_rank_n_terms', 50),
+        )
+    logabs_j = np.log10(np.maximum(np.abs(j_values), 1e-30))
+    quotient_j_rank_loss, quotient_j_rank_target_std = _compute_quotient_j_rank_metrics(
+        quotient,
+        logabs_j,
+        temperature=getattr(config.train, 'j_rank_temperature', 0.10),
+        min_delta=getattr(config.train, 'j_rank_min_delta', 0.10),
+    )
 
     return {
         'quotient_pair_distance_mean': float(np.mean(np.linalg.norm(
@@ -869,6 +931,8 @@ def compute_factorized_consistency(
         'quotient_spread_loss': quotient_spread_loss,
         'quotient_jacobian_gram_loss': quotient_jacobian_gram_loss,
         'quotient_logdet_loss': quotient_logdet_loss,
+        'quotient_j_rank_loss': quotient_j_rank_loss,
+        'quotient_j_rank_target_std': quotient_j_rank_target_std,
         'quotient_cov_logdet': float(quotient_cov_logdet),
         'tau_cov_logdet': float(tau_cov_logdet),
         'quotient_cov_eig_min': float(quotient_cov_eigs[0]) if quotient_cov_eigs.size >= 1 else 0.0,
