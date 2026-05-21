@@ -8,6 +8,24 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
+from eval.diagnostics import (
+    DEFAULT_EXPERIMENTS,
+    FUNDAMENTAL_RUNS,
+    RUN_ORDER,
+    WIDE_RUN,
+    choose_focus_branch,
+    choose_next_branch,
+    classify_branch,
+    collapse_to_one,
+    diagram_shift,
+    dim_metrics,
+    fmt_metric,
+    focus_collapse_visible,
+    stable_to_two,
+    supports_equivariant_transition,
+    trajectory_drop,
+    wide_dominates,
+)
 from eval.topology import (
     load_diagram_payload,
     plot_phaseb_diagram_distance,
@@ -15,44 +33,12 @@ from eval.topology import (
     plot_phaseb_h1_trajectory,
     tda_dependencies_available,
 )
-from run_latent_topology_diagnostics import (
-    DEFAULT_EXPERIMENTS,
-    _collapse_to_one,
-    _dim_metrics,
-    _run_topology_for_experiment,
-    _stable_to_two,
-    classify_branch,
-)
-
-
-RUN_ORDER = [
-    't2_standard',
-    't2_torus',
-    'lattice_standard_norm',
-    'lattice_standard_norm_inv',
-    'lattice_vae_norm_beta001',
-    'lattice_vae_norm_inv_b010_l100',
-    'lattice_vae_norm_inv_b030_l100',
-    'lattice_vae_wide_norm_inv_b003_l030',
-]
-FUNDAMENTAL_RUNS = [
-    'lattice_vae_norm_inv_b010_l100',
-    'lattice_vae_norm_inv_b030_l100',
-]
-WIDE_RUN = 'lattice_vae_wide_norm_inv_b003_l030'
+from run_latent_topology_diagnostics import _run_topology_for_experiment
 
 
 def _load_json(path: str) -> dict:
     with open(path) as f:
         return json.load(f)
-
-
-def _fmt(value, precision: int = 4) -> str:
-    if value is None:
-        return 'n/a'
-    if isinstance(value, (float, int, np.floating, np.integer)):
-        return f'{float(value):.{precision}f}'
-    return str(value)
 
 
 def _ensure_phasea_run_outputs(
@@ -82,228 +68,6 @@ def _payload_path(run_summary: dict, diagnostics_dir: str) -> str:
     run_dir = os.path.join(diagnostics_dir, run_summary['name'])
     payload_name = run_summary.get('diagram_payload', 'diagram_payload.npz')
     return os.path.join(run_dir, payload_name)
-
-
-def _trajectory_drop(summary: dict, metric_key: str) -> tuple[float | None, float | None]:
-    dim3 = _dim_metrics(summary, 3)
-    dim2 = _dim_metrics(summary, 2)
-    dim1 = _dim_metrics(summary, 1)
-    drop_32 = None
-    drop_21 = None
-    if dim3 and dim2:
-        value3 = dim3.get(metric_key)
-        value2 = dim2.get(metric_key)
-        if value3 is not None and value2 is not None:
-            drop_32 = float(value2) - float(value3)
-    if dim2 and dim1:
-        value2 = dim2.get(metric_key)
-        value1 = dim1.get(metric_key)
-        if value2 is not None and value1 is not None:
-            drop_21 = float(value1) - float(value2)
-    return drop_32, drop_21
-
-
-def _diagram_shift(summary: dict, dim: int, key: str) -> float:
-    distance = _dim_metrics(summary, dim).get('diagram_distance_to_prev')
-    if not distance:
-        return 0.0
-    return float(distance.get(key, 0.0))
-
-
-def _supports_equivariant_transition(summary: dict) -> bool:
-    """Whether one representative run supports moving to equivariant/factorized latent."""
-    if not (_stable_to_two(summary) and _collapse_to_one(summary)):
-        return False
-
-    dim2 = _dim_metrics(summary, 2)
-    dim1 = _dim_metrics(summary, 1)
-    h1_ratio = dim2.get('h1_total_persistence', 0.0) / max(
-        dim1.get('h1_total_persistence', 0.0), 1e-8,
-    )
-    shift_32 = _diagram_shift(summary, 2, 'h1_bottleneck')
-    shift_21 = _diagram_shift(summary, 1, 'h1_bottleneck')
-    return h1_ratio >= 2.0 and (shift_21 >= shift_32 or shift_32 == 0.0)
-
-
-def _wide_dominates(
-    wide_summary: dict | None,
-    fundamental_summaries: list[dict],
-) -> bool:
-    """Whether the wide-sampling run clearly dominates the fundamental-domain runs."""
-    if wide_summary is None or not _stable_to_two(wide_summary):
-        return False
-
-    dim2_wide = _dim_metrics(wide_summary, 2)
-    dim2_fundamental = [_dim_metrics(summary, 2) for summary in fundamental_summaries if summary]
-    if not dim2_fundamental:
-        return False
-
-    score = 0
-    if dim2_wide.get('trustworthiness', 0.0) >= max(
-        dim.get('trustworthiness', 0.0) for dim in dim2_fundamental
-    ) + 0.02:
-        score += 1
-    if dim2_wide.get('knn_jaccard_mean', 0.0) >= max(
-        dim.get('knn_jaccard_mean', 0.0) for dim in dim2_fundamental
-    ) + 0.005:
-        score += 1
-
-    rank_candidates = [
-        dim.get('partner_rank_percentile_mean')
-        for dim in dim2_fundamental
-        if dim.get('partner_rank_percentile_mean') is not None
-    ]
-    if rank_candidates and dim2_wide.get('partner_rank_percentile_mean') is not None:
-        if dim2_wide['partner_rank_percentile_mean'] <= min(rank_candidates) - 0.03:
-            score += 1
-
-    if dim2_wide.get('h1_total_persistence', 0.0) >= max(
-        dim.get('h1_total_persistence', 0.0) for dim in dim2_fundamental
-    ) + 1.0:
-        score += 1
-
-    return score >= 3
-
-
-def choose_next_branch(
-    topology_runs: dict[str, dict],
-    phasea_branch: dict,
-) -> dict:
-    """Choose the most plausible immediate next research branch."""
-    source_branch = phasea_branch.get('branch', 'A')
-    fundamental_summaries = [
-        topology_runs.get(name) for name in FUNDAMENTAL_RUNS
-        if topology_runs.get(name) is not None
-    ]
-    supported_runs = [
-        name for name in FUNDAMENTAL_RUNS
-        if topology_runs.get(name) is not None and _supports_equivariant_transition(topology_runs[name])
-    ]
-    wide_summary = topology_runs.get(WIDE_RUN)
-    wide_dominates = _wide_dominates(wide_summary, fundamental_summaries)
-
-    evidence = [
-        f"Phase A branch: `{source_branch}`.",
-    ]
-    if supported_runs:
-        evidence.append(
-            'Fundamental-domain runs supporting a 2D quotient chart transition: '
-            + ', '.join(f'`{name}`' for name in supported_runs) + '.'
-        )
-    if wide_summary is not None:
-        wide_dim2 = _dim_metrics(wide_summary, 2)
-        evidence.append(
-            f"`{WIDE_RUN}` at k=2: trust={_fmt(wide_dim2.get('trustworthiness'))}, "
-            f"overlap={_fmt(wide_dim2.get('knn_jaccard_mean'))}, "
-            f"rank={_fmt(wide_dim2.get('partner_rank_percentile_mean'))}, "
-            f"H1={_fmt(wide_dim2.get('h1_total_persistence'))}."
-        )
-
-    if source_branch == 'E' or wide_dominates:
-        return {
-            'primary_branch': 'A3',
-            'summary': 'Wide sampling now looks like the most actionable bottleneck, so sampling redesign should come before new latent symmetries.',
-            'recommended_next_step': 'Design a lattice sampling/coverage experiment before implementing a new latent action.',
-            'evidence': evidence,
-        }
-
-    if source_branch == 'A' and supported_runs:
-        return {
-            'primary_branch': 'A1',
-            'summary': 'The best fundamental-domain VAE+invariance runs still support a stable 2D quotient chart through k=2, so the next model step should encode that chart explicitly.',
-            'recommended_next_step': 'Prototype an equivariant or factorized latent model that preserves a 2D quotient chart.',
-            'evidence': evidence,
-        }
-
-    return {
-        'primary_branch': 'A2',
-        'summary': 'PH comparisons still suggest chart fragility in the fundamental-domain runs, so geometry-preserving regularization should come before a structured latent action.',
-        'recommended_next_step': 'Add a chart-preserving regularizer and rerun the representative lattice comparison.',
-        'evidence': evidence,
-    }
-
-
-def _focus_collapse_visible(summary: dict) -> tuple[bool, list[str]]:
-    """Return whether k=1 collapse is visible for a focus run."""
-    dim2 = _dim_metrics(summary, 2)
-    dim1 = _dim_metrics(summary, 1)
-    conditions = []
-    if dim1.get('trustworthiness', 0.0) <= dim2.get('trustworthiness', 0.0) - 0.05:
-        conditions.append('trust drops from k=2 to k=1')
-    if dim1.get('knn_jaccard_mean', 0.0) <= 0.75 * dim2.get('knn_jaccard_mean', 0.0):
-        conditions.append('overlap drops from k=2 to k=1')
-    if dim1.get('h1_total_persistence', 0.0) <= 0.1 * dim2.get('h1_total_persistence', 0.0):
-        conditions.append('H1 collapses from k=2 to k=1')
-    if dim1.get('max_abs_logabsj_spearman', 0.0) <= 0.5 * dim2.get('max_abs_logabsj_spearman', 0.0):
-        conditions.append('j Spearman drops from k=2 to k=1')
-    return len(conditions) >= 2, conditions
-
-
-def choose_focus_branch(
-    topology_runs: dict[str, dict],
-    focus_run_name: str | None,
-) -> dict | None:
-    """Classify a latest focus run alongside the global Phase B decision."""
-    if not focus_run_name:
-        return None
-
-    summary = topology_runs.get(focus_run_name)
-    if summary is None:
-        return {
-            'focus_run_name': focus_run_name,
-            'primary_branch': 'A2 continues',
-            'summary': 'Focus run was not available in the topology comparison, so the factorized branch cannot be promoted.',
-            'recommended_next_step': 'Regenerate topology diagnostics for the selected focus run.',
-            'accepted': False,
-            'evidence': [f'Focus run `{focus_run_name}` is missing.'],
-        }
-
-    dim2 = _dim_metrics(summary, 2)
-    collapse_visible, collapse_evidence = _focus_collapse_visible(summary)
-    criteria = {
-        'k=2 rank <= 0.15': dim2.get('partner_rank_percentile_mean', float('inf')) <= 0.15,
-        'k=2 overlap >= 0.058': dim2.get('knn_jaccard_mean', float('-inf')) >= 0.058,
-        'k=2 eff_dim >= 1.55': dim2.get('effective_dimension', float('-inf')) >= 1.55,
-        'k=2 j Spearman >= 0.85': dim2.get('max_abs_logabsj_spearman', float('-inf')) >= 0.85,
-        'k=1 collapse visible': collapse_visible,
-    }
-    accepted = all(criteria.values())
-    evidence = [
-        f"Focus run: `{focus_run_name}`.",
-        f"k=2 rank={_fmt(dim2.get('partner_rank_percentile_mean'))}, "
-        f"overlap={_fmt(dim2.get('knn_jaccard_mean'))}, "
-        f"eff_dim={_fmt(dim2.get('effective_dimension'))}, "
-        f"j={_fmt(dim2.get('max_abs_logabsj_spearman'))}.",
-        'Passed criteria: '
-        + (', '.join(name for name, passed in criteria.items() if passed) or 'none')
-        + '.',
-        'Failed criteria: '
-        + (', '.join(name for name, passed in criteria.items() if not passed) or 'none')
-        + '.',
-    ]
-    if collapse_evidence:
-        evidence.append('Collapse evidence: ' + '; '.join(collapse_evidence) + '.')
-
-    if accepted:
-        return {
-            'focus_run_name': focus_run_name,
-            'primary_branch': 'A1-return candidate',
-            'summary': 'The focus factorized run satisfies the k=2 chart / partner / j criteria and still collapses at k=1.',
-            'recommended_next_step': 'Treat this run as an A1 return candidate and compare it against the next model-family options.',
-            'accepted': True,
-            'criteria': criteria,
-            'evidence': evidence,
-        }
-
-    return {
-        'focus_run_name': focus_run_name,
-        'primary_branch': 'A2 continues',
-        'summary': 'The global VAE-anchor decision may remain A1, but the latest factorized focus run has not met the balanced k=2 criteria.',
-        'recommended_next_step': 'Continue A2 with stronger contrastive / semantic geometry for the factorized branch.',
-        'accepted': False,
-        'criteria': criteria,
-        'evidence': evidence,
-    }
 
 
 def write_phaseb_report(
@@ -344,14 +108,14 @@ def write_phaseb_report(
         if summary is None:
             lines.append(f'| `{run_name}` | missing | missing | missing | missing | missing |')
             continue
-        dim2 = _dim_metrics(summary, 2)
-        dim1 = _dim_metrics(summary, 1)
+        dim2 = dim_metrics(summary, 2)
+        dim1 = dim_metrics(summary, 1)
         lines.append(
-            f"| `{run_name}` | {_fmt(dim2.get('trustworthiness'))} | "
-            f"{_fmt(dim1.get('trustworthiness'))} | "
-            f"{_fmt(dim2.get('h1_total_persistence'))} | "
-            f"{_fmt(dim1.get('h1_total_persistence'))} | "
-            f"{_fmt(_diagram_shift(summary, 1, 'h1_bottleneck'))} |"
+            f"| `{run_name}` | {fmt_metric(dim2.get('trustworthiness'))} | "
+            f"{fmt_metric(dim1.get('trustworthiness'))} | "
+            f"{fmt_metric(dim2.get('h1_total_persistence'))} | "
+            f"{fmt_metric(dim1.get('h1_total_persistence'))} | "
+            f"{fmt_metric(diagram_shift(summary, 1, 'h1_bottleneck'))} |"
         )
 
     lines.extend([
@@ -375,19 +139,19 @@ def write_phaseb_report(
         if summary is None:
             lines.append(f'| `{run_name}` | missing | missing | missing | missing | missing | missing | missing | missing | missing | missing |')
             continue
-        dim2 = _dim_metrics(summary, 2)
-        dim1 = _dim_metrics(summary, 1)
+        dim2 = dim_metrics(summary, 2)
+        dim1 = dim_metrics(summary, 1)
         lines.append(
-            f"| `{run_name}` | {_fmt(dim2.get('partner_rank_percentile_mean'))} | "
-            f"{_fmt(dim2.get('partner_knn_hit_rate'))} | "
-            f"{_fmt(dim2.get('trustworthiness'))} | "
-            f"{_fmt(dim2.get('knn_jaccard_mean'))} | "
-            f"{_fmt(dim2.get('effective_dimension'))} | "
-            f"{_fmt(dim2.get('h1_total_persistence'))} | "
-            f"{_fmt(dim2.get('h1_longest_bar'))} | "
-            f"{_fmt(_diagram_shift(summary, 2, 'h1_bottleneck'))} | "
-            f"{_fmt(_diagram_shift(summary, 1, 'h1_bottleneck'))} | "
-            f"{_fmt(dim1.get('max_abs_logabsj_spearman'))} |"
+            f"| `{run_name}` | {fmt_metric(dim2.get('partner_rank_percentile_mean'))} | "
+            f"{fmt_metric(dim2.get('partner_knn_hit_rate'))} | "
+            f"{fmt_metric(dim2.get('trustworthiness'))} | "
+            f"{fmt_metric(dim2.get('knn_jaccard_mean'))} | "
+            f"{fmt_metric(dim2.get('effective_dimension'))} | "
+            f"{fmt_metric(dim2.get('h1_total_persistence'))} | "
+            f"{fmt_metric(dim2.get('h1_longest_bar'))} | "
+            f"{fmt_metric(diagram_shift(summary, 2, 'h1_bottleneck'))} | "
+            f"{fmt_metric(diagram_shift(summary, 1, 'h1_bottleneck'))} | "
+            f"{fmt_metric(dim1.get('max_abs_logabsj_spearman'))} |"
         )
 
     lines.extend([
@@ -610,13 +374,13 @@ def run_all(
     print('-' * 84)
     for name in ordered_runs:
         summary = topology_runs[name]
-        dim2 = _dim_metrics(summary, 2)
+        dim2 = dim_metrics(summary, 2)
         print(
             f"{name:<36} "
             f"{(float('nan') if dim2.get('partner_rank_percentile_mean') is None else dim2.get('partner_rank_percentile_mean')):>10.4f} "
             f"{(float('nan') if dim2.get('partner_knn_hit_rate') is None else dim2.get('partner_knn_hit_rate')):>10.4f} "
             f"{dim2.get('h1_total_persistence', float('nan')):>10.4f} "
-            f"{_diagram_shift(summary, 1, 'h1_bottleneck'):>12.4f}"
+            f"{diagram_shift(summary, 1, 'h1_bottleneck'):>12.4f}"
         )
 
     print(f"\nPrimary next branch: {decision['primary_branch']}")

@@ -20,7 +20,7 @@ from eval.topology import (
     plot_phaseb_h1_diagram_grid,
     save_diagram_payload,
 )
-from run_latent_topology_diagnostics import classify_branch
+from eval.diagnostics import classify_branch
 
 
 def _fake_persistence_diagrams(points: np.ndarray, maxdim: int):
