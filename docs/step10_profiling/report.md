@@ -3,14 +3,14 @@
 ## 計測条件
 
 - 対象: `run_lattice_step10_experiments.py` の先頭 1 実験 `lattice_factorized_vae_fd_b030_q100_g030_d030_cl010_r030_ld010` を 2 epoch だけ流す。
-- ハーネス: [profile_step10.py](../../profile_step10.py)。本体コードには一切手を入れず、モンキーパッチで計時を注入。
+- ハーネス: [profile_step10.py](../../scripts/profile_step10.py)。本体コードには一切手を入れず、モンキーパッチで計時を注入。
 - ハード: NVIDIA GeForce RTX 2080 Ti (11 GB)、driver 580.126.09、CUDA 13.0。
 - フレームワーク: JAX 0.9.2 / Flax / ml_collections (CUDA device)。
 - データセット: lattice / train=5000 / val=1000 / test=1000 / signal_length=100 / batch_size=128。
 - モデル: `factorized_vae` / 総パラメータ **135,320** / encoder(256,128,64) / decoder(64,128,256) / latent_dim=6。
 - 実行: 2 回
   - `raw/` … `PROFILE_TRACE=1 JAX_LOG_COMPILES=1` で nvidia-smi dmon 併走 (マクロ/per-step/per-metric JSON + JIT ログ + jax profiler トレース)
-  - `raw/pyspy_train.svg` … `uvx py-spy record --subprocesses -- uv run python profile_step10.py` で CPU サンプリング (200 Hz、11753 サンプル、エラー 0)
+  - `raw/pyspy_train.svg` … `uvx py-spy record --subprocesses -- uv run python scripts/profile_step10.py` で CPU サンプリング (200 Hz、11753 サンプル、エラー 0)
 
 ## 結論(先に要点)
 

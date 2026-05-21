@@ -33,7 +33,7 @@ from eval.topology import (
     plot_phaseb_h1_trajectory,
     tda_dependencies_available,
 )
-from run_latent_topology_diagnostics import _run_topology_for_experiment
+from scripts.run_latent_topology_diagnostics import _run_topology_for_experiment
 
 
 def _load_json(path: str) -> dict:

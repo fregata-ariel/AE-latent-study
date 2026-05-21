@@ -233,7 +233,7 @@ if PROFILE_TRACE:
 
 # ---------- Build the short sweep ---------- #
 
-import run_lattice_step10_experiments as step10_mod  # noqa: E402
+import scripts.run_lattice_step10_experiments as step10_mod  # noqa: E402
 
 
 def _short_experiments():

@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import os
 
-from run_lattice_step7_experiments import _select_best_run
-from run_latent_topology_diagnostics import run_all as run_topology_all
-from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
+from scripts.run_lattice_step7_experiments import _select_best_run
+from scripts.run_latent_topology_diagnostics import run_all as run_topology_all
+from scripts.run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 
 
 DEFAULT_TOPOLOGY_OVERRIDES = {

@@ -11,22 +11,22 @@ import numpy as np
 
 from configs.default import get_config
 from configs.lattice_default import get_config as get_lattice_config
-from run_lattice_step2_experiments import run_all as run_step2_all
-from run_lattice_step3_experiments import run_all as run_step3_all
-from run_lattice_step4_experiments import run_all as run_step4_all
-from run_lattice_step5_experiments import run_all as run_step5_all
-from run_lattice_step6_experiments import run_all as run_step6_all
-from run_lattice_step7_experiments import run_all as run_step7_all
-from run_lattice_step8_experiments import run_all as run_step8_all
-from run_lattice_step9_experiments import run_all as run_step9_all
-from run_lattice_step10_experiments import run_all as run_step10_all
+from scripts.run_lattice_step2_experiments import run_all as run_step2_all
+from scripts.run_lattice_step3_experiments import run_all as run_step3_all
+from scripts.run_lattice_step4_experiments import run_all as run_step4_all
+from scripts.run_lattice_step5_experiments import run_all as run_step5_all
+from scripts.run_lattice_step6_experiments import run_all as run_step6_all
+from scripts.run_lattice_step7_experiments import run_all as run_step7_all
+from scripts.run_lattice_step8_experiments import run_all as run_step8_all
+from scripts.run_lattice_step9_experiments import run_all as run_step9_all
+from scripts.run_lattice_step10_experiments import run_all as run_step10_all
 from eval.diagnostics import choose_focus_branch, choose_next_branch
-from run_latent_topology_diagnostics import run_all as run_topology_all
-from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
-from run_topology_step7_followup import run_all as run_topology_step7_followup_all
-from run_topology_step8_followup import run_all as run_topology_step8_followup_all
-from run_topology_step9_followup import run_all as run_topology_step9_followup_all
-from run_topology_step10_followup import run_all as run_topology_step10_followup_all
+from scripts.run_latent_topology_diagnostics import run_all as run_topology_all
+from scripts.run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
+from scripts.run_topology_step7_followup import run_all as run_topology_step7_followup_all
+from scripts.run_topology_step8_followup import run_all as run_topology_step8_followup_all
+from scripts.run_topology_step9_followup import run_all as run_topology_step9_followup_all
+from scripts.run_topology_step10_followup import run_all as run_topology_step10_followup_all
 from eval.analysis import run_full_evaluation
 from train.trainer import train_and_evaluate
 
@@ -1104,7 +1104,7 @@ def test_step10_runner_with_tiny_config():
 
 def test_topology_runner_requires_tda_dependencies():
     with tempfile.TemporaryDirectory() as tmpdir:
-        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=False):
+        with patch('scripts.run_latent_topology_diagnostics.tda_dependencies_available', return_value=False):
             try:
                 run_topology_all(
                     base_dir=tmpdir,
@@ -1180,7 +1180,7 @@ def test_topology_runner_with_fake_backend():
             },
         ]
 
-        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+        with patch('scripts.run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
             with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
                 with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
                     combined = run_topology_all(
@@ -1279,7 +1279,7 @@ def test_topology_phaseb_runner_with_saved_phasea_outputs():
             {'name': 'lattice_vae_norm_inv_b030_l100', 'kind': 'lattice', 'config_source': tiny_lattice_factory},
         ]
 
-        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+        with patch('scripts.run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
             with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
                 with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
                     run_topology_all(
@@ -1423,7 +1423,7 @@ def test_topology_runner_factorized_uses_quotient_view():
             },
         ]
 
-        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+        with patch('scripts.run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
             with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
                 with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
                     combined = run_topology_all(
@@ -1478,7 +1478,7 @@ def test_topology_runner_applies_config_overrides():
             },
         ]
 
-        with patch('run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
+        with patch('scripts.run_latent_topology_diagnostics.tda_dependencies_available', return_value=True):
             with patch('eval.topology._compute_persistence_diagrams', side_effect=fake_persistence_diagrams):
                 with patch('eval.topology._compute_diagram_distance_metrics', side_effect=fake_diagram_distances):
                     combined = run_topology_all(
@@ -1517,8 +1517,8 @@ def test_topology_step7_followup_runner():
         phasea_payload = {'branch_assessment': {'branch': 'A'}}
         phaseb_payload = {'phaseB_decision': {'primary_branch': 'A1'}}
 
-        with patch('run_topology_step7_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
-            with patch('run_topology_step7_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
+        with patch('scripts.run_topology_step7_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
+            with patch('scripts.run_topology_step7_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
                 combined = run_topology_step7_followup_all(
                     base_dir=tmpdir,
                     step7_summary_path=summary_path,
@@ -1563,8 +1563,8 @@ def test_topology_step8_followup_runner():
         phasea_payload = {'branch_assessment': {'branch': 'A'}}
         phaseb_payload = {'phaseB_decision': {'primary_branch': 'A1'}}
 
-        with patch('run_topology_step8_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
-            with patch('run_topology_step8_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
+        with patch('scripts.run_topology_step8_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
+            with patch('scripts.run_topology_step8_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
                 combined = run_topology_step8_followup_all(
                     base_dir=tmpdir,
                     step8_summary_path=summary_path,
@@ -1614,8 +1614,8 @@ def test_topology_step9_followup_runner():
         phasea_payload = {'branch_assessment': {'branch': 'A'}}
         phaseb_payload = {'phaseB_decision': {'primary_branch': 'A1'}}
 
-        with patch('run_topology_step9_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
-            with patch('run_topology_step9_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
+        with patch('scripts.run_topology_step9_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
+            with patch('scripts.run_topology_step9_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
                 combined = run_topology_step9_followup_all(
                     base_dir=tmpdir,
                     step9_summary_path=summary_path,
@@ -1668,8 +1668,8 @@ def test_topology_step10_followup_runner():
             'focus_decision': {'primary_branch': 'A2 continues'},
         }
 
-        with patch('run_topology_step10_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
-            with patch('run_topology_step10_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
+        with patch('scripts.run_topology_step10_followup.run_topology_all', return_value=phasea_payload) as mock_phasea:
+            with patch('scripts.run_topology_step10_followup.run_topology_phaseb_all', return_value=phaseb_payload) as mock_phaseb:
                 combined = run_topology_step10_followup_all(
                     base_dir=tmpdir,
                     step10_summary_path=summary_path,
