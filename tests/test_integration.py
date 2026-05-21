@@ -20,12 +20,9 @@ from run_lattice_step7_experiments import run_all as run_step7_all
 from run_lattice_step8_experiments import run_all as run_step8_all
 from run_lattice_step9_experiments import run_all as run_step9_all
 from run_lattice_step10_experiments import run_all as run_step10_all
+from eval.diagnostics import choose_focus_branch, choose_next_branch
 from run_latent_topology_diagnostics import run_all as run_topology_all
-from run_topology_phaseB_comparison import (
-    choose_focus_branch,
-    choose_next_branch,
-    run_all as run_topology_phaseb_all,
-)
+from run_topology_phaseB_comparison import run_all as run_topology_phaseb_all
 from run_topology_step7_followup import run_all as run_topology_step7_followup_all
 from run_topology_step8_followup import run_all as run_topology_step8_followup_all
 from run_topology_step9_followup import run_all as run_topology_step9_followup_all
