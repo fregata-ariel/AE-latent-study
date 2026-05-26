@@ -48,7 +48,7 @@ def _deterministic_subsample_indices(n_total: int, max_samples: int) -> np.ndarr
 def _step3_factory_map() -> dict[str, Callable[[], object]]:
     """Map generated Step 3 run names to their config factories."""
     try:
-        from run_lattice_step3_experiments import EXPERIMENTS as step3_experiments
+        from scripts.run_lattice_step3_experiments import EXPERIMENTS as step3_experiments
     except Exception:
         return {}
 

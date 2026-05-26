@@ -30,7 +30,7 @@ cuda = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["configs*", "data*", "models*", "train*", "eval*"]
+include = ["configs*", "data*", "models*", "train*", "eval*", "scripts*"]
 
 [dependency-groups]
 dev = [
